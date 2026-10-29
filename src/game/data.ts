@@ -74,7 +74,7 @@ const L = (l: Omit<LevelDef, "objectives"> & { objectives: Omit<Objective, "id">
 });
 
 export const LEVELS: LevelDef[] = [
-  L({ id: 1, name: "First Contact", sector: 1, sectorName: "Asteroid Belt", theme: "A quiet drift of dust and pebbles.", startMass: 10, target: 80, weights: { dust: 70, tinyAsteroid: 30 }, density: 110, reward: 15, hues: [220, 260],
+  L({ id: 1, name: "First Contact", sector: 1, sectorName: "Asteroid Belt", theme: "A quiet drift of dust and pebbles.", startMass: 10, target: 80, weights: { dust: 70, tinyAsteroid: 30 }, density: 150, reward: 15, hues: [220, 260],
     objectives: [{ kind: "time", label: "Finish in under 60s", value: 60, gems: 5 }, { kind: "count", type: "tinyAsteroid", label: "Absorb 5 tiny asteroids", value: 5, gems: 5 }, { kind: "bonusMass", label: "Reach 95 mass", value: 95, gems: 4 }] }),
   L({ id: 2, name: "The Shattered Belt", sector: 1, sectorName: "Asteroid Belt", theme: "Broken rock tumbles through the dark.", startMass: 25, target: 190, weights: { dust: 30, tinyAsteroid: 45, largeAsteroid: 25 }, density: 120, reward: 20, hues: [235, 285],
     objectives: [{ kind: "time", label: "Finish in under 75s", value: 75, gems: 5 }, { kind: "count", type: "largeAsteroid", label: "Absorb 6 large asteroids", value: 6, gems: 6 }, { kind: "bonusMass", label: "Reach 220 mass", value: 220, gems: 4 }] }),
