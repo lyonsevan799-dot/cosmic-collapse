@@ -120,7 +120,7 @@ export class Engine {
   pause() { this.paused = true; this.resetInput(); }
   resume() { this.paused = false; this.resetInput(); this.last = performance.now(); }
 
-  zoomFor(r: number) { const base = Math.min(1, Math.max(0.6, Math.min(this.w, this.h) / 800)); return base * Math.pow(12 / r, 0.7); }
+  zoomFor(r: number) { const base = Math.min(1.8, Math.max(0.9, Math.min(this.w, this.h) / 520)); return base * Math.pow(12 / r, 0.7); }
   viewRadius() { return Math.hypot(this.w, this.h) / 2 / this.cam.zoom; }
 
   // ---------- spawning ----------
