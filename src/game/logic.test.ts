@@ -1,55 +1,40 @@
 import { describe, expect, it } from "vitest";
-import { LEVELS } from "./data";
-import { canAbsorb, claimMilestone, completeLevel, defaultSave, isLevelPlayable, purchaseSkin, purchaseUpgrade, validateSave } from "./logic";
+import { kindAt, topEligibleIndex } from "./data";
+import { addMass, canAbsorb, defaultSave, formatMass, recordAbsorb, unlockAchievements, validateSave } from "./logic";
 
-const stats = (mass: number, time = 999) => ({ mass, time, counts: {} });
-
-describe("game rules", () => {
-  it("tiny black hole cannot absorb a gas giant but can absorb dust", () => {
-    expect(canAbsorb(10, "gasGiant")).toBe(false);
-    expect(canAbsorb(10, "dust")).toBe(true);
+describe("endless rules", () => {
+  it("tiny black hole can absorb debris but not a gas giant", () => {
+    expect(canAbsorb(10, 0)).toBe(true);
+    expect(canAbsorb(10, 7)).toBe(false);
   });
-  it("upgrade purchase never makes gems negative", () => {
-    const s = { ...defaultSave(), gems: 10 };
-    expect(purchaseUpgrade(s, "gravity")).toBeNull();
-    const ok = purchaseUpgrade({ ...s, gems: 20 }, "gravity")!;
-    expect(ok.gems).toBe(0);
-    expect(ok.upgrades.gravity).toBe(1);
+  it("mass never decreases or becomes Infinity", () => {
+    expect(addMass(100, -5)).toBe(100);
+    expect(addMass(1e300, 1e300)).toBe(1e300);
   });
-  it("level reward full on first clear, reduced on replay, and unlocks next", () => {
-    const first = completeLevel(defaultSave(), 0, stats(80));
-    expect(first.lines[0].gems).toBe(LEVELS[0].reward);
-    expect(first.save.highestUnlocked).toBe(1);
-    const again = completeLevel(first.save, 0, stats(80));
-    expect(again.lines[0].gems).toBeLessThan(LEVELS[0].reward);
+  it("formats big numbers", () => {
+    expect(formatMass(950)).toBe("950");
+    expect(formatMass(1234)).toBe("1.23K");
+    expect(formatMass(3.5e6)).toBe("3.50M");
+    expect(formatMass(2.1e9)).toBe("2.10B");
+    expect(formatMass(4.7e12)).toBe("4.70T");
+    expect(formatMass(Infinity)).not.toContain("Infinity");
   });
-  it("optional objectives pay only once", () => {
-    const a = completeLevel(defaultSave(), 0, stats(100, 30));
-    const b = completeLevel(a.save, 0, stats(100, 30));
-    expect(b.objectivesDone.every((o) => !o.isNew)).toBe(true);
+  it("achievements unlock at thresholds, only once", () => {
+    const s = { ...defaultSave(), stats: recordAbsorb(defaultSave().stats, kindAt(0)) };
+    const a = unlockAchievements(s, 1000);
+    expect(a.save.achievements).toEqual(["first", "m1e2", "m1e3"]);
+    expect(unlockAchievements(a.save, 1000).unlocked).toHaveLength(0);
+    expect(unlockAchievements(a.save, 9999).unlocked).toHaveLength(0);
   });
-  it("milestones are claimed once", () => {
-    const r = claimMilestone(defaultSave(), 120)!;
-    expect(r.milestone).toBe(100);
-    expect(claimMilestone(r.save, 120)).toBeNull();
+  it("universe keeps generating bigger objects", () => {
+    expect(kindAt(60).minMass).toBeGreaterThan(kindAt(59).minMass);
+    expect(topEligibleIndex(1e20)).toBeGreaterThan(topEligibleIndex(1e10));
   });
-  it("locked levels are not playable", () => {
-    expect(isLevelPlayable(defaultSave(), 1)).toBe(false);
-    expect(isLevelPlayable(defaultSave(), 0)).toBe(true);
-  });
-  it("campaign skin cannot be bought with gems", () => {
-    expect(purchaseSkin({ ...defaultSave(), gems: 9999 }, "crown")).toBeNull();
-  });
-  it("completing final level unlocks crown", () => {
-    const s = { ...defaultSave(), highestUnlocked: 9 };
-    expect(completeLevel(s, 9, stats(6500)).save.skinsOwned).toContain("crown");
-  });
-  it("malformed save keeps valid fields", () => {
-    const s = validateSave({ gems: 55, upgrades: "bad", skin: "nope", completed: [0, 1, 99] });
-    expect(s.gems).toBe(55);
+  it("corrupted save keeps valid fields", () => {
+    const s = validateSave({ bestMass: 5000, achievements: ["bogus"], skin: "crown" });
+    expect(s.bestMass).toBe(5000);
     expect(s.skin).toBe("horizon");
-    expect(s.completed).toEqual([0, 1]);
-    expect(s.highestUnlocked).toBe(2);
-    expect(validateSave("garbage").gems).toBe(0);
+    expect(s.achievements).toContain("m1e3");
+    expect(validateSave("garbage").bestMass).toBe(0);
   });
 });
