@@ -1,79 +1,61 @@
-// Pure game rules: save validation, eligibility, upgrades, rewards. No DOM here.
-import { LEVELS, MILESTONES, OBJECTS, PLAYER, SKINS, UPGRADES, type ObjType, type UpgradeId } from "./data";
+// Pure game rules: save validation, eligibility, achievements, number formatting. No DOM here.
+import { ACHIEVEMENTS, PLAYER, SKINS, kindAt, type Kind } from "./data";
 
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 export const SAVE_KEY = "cosmic-collapse-save";
+export const MAX_MASS = 1e300;
 
 export interface Settings { audio: boolean; sfx: number; music: number; shake: boolean; reduced: boolean; }
+export interface LifetimeStats { absorbed: number; planets: number; stars: number; galaxies: number; playTime: number; }
 export interface SaveData {
   version: number;
-  highestUnlocked: number; // index into LEVELS
-  completed: number[]; // level indices
-  bestTimes: Record<string, number>;
-  gems: number;
-  upgrades: Record<UpgradeId, number>;
-  skinsOwned: string[];
+  bestMass: number;
+  /** Mass of the run in progress, for Continue. 0 = no run. */
+  runMass: number;
+  achievements: string[];
+  stats: LifetimeStats;
   skin: string;
   settings: Settings;
   tutorialDone: boolean;
-  objectives: string[];
-  milestones: number[];
-  campaignDone: boolean;
 }
 
 export const defaultSave = (): SaveData => ({
   version: SAVE_VERSION,
-  highestUnlocked: 0,
-  completed: [],
-  bestTimes: {},
-  gems: 0,
-  upgrades: { gravity: 0, growth: 0, speed: 0, efficiency: 0 },
-  skinsOwned: ["horizon"],
+  bestMass: 0,
+  runMass: 0,
+  achievements: [],
+  stats: { absorbed: 0, planets: 0, stars: 0, galaxies: 0, playTime: 0 },
   skin: "horizon",
   settings: { audio: true, sfx: 0.7, music: 0.4, shake: true, reduced: false },
   tutorialDone: false,
-  objectives: [],
-  milestones: [],
-  campaignDone: false,
 });
 
 const num = (v: unknown, d: number, min = -Infinity, max = Infinity) =>
   typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : d;
 const bool = (v: unknown, d: boolean) => (typeof v === "boolean" ? v : d);
-const strArr = (v: unknown, d: string[]) => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : d);
 
-/** Validate a parsed save field-by-field, keeping every valid field. */
+/** Validate a parsed save field-by-field, keeping every valid field. Migrates v1 saves. */
 export function validateSave(raw: unknown): SaveData {
   const d = defaultSave();
   if (!raw || typeof raw !== "object") return d;
   const r = raw as Record<string, any>;
-  const maxLvl = LEVELS.length - 1;
-  const completed = Array.isArray(r.completed)
-    ? [...new Set(r.completed.filter((x: unknown) => Number.isInteger(x) && (x as number) >= 0 && (x as number) <= maxLvl))] as number[]
-    : d.completed;
-  const ups = { ...d.upgrades };
-  if (r.upgrades && typeof r.upgrades === "object") {
-    for (const u of UPGRADES) ups[u.id] = Math.round(num(r.upgrades[u.id], 0, 0, u.costs.length));
-  }
-  const owned = strArr(r.skinsOwned, d.skinsOwned).filter((s) => SKINS.some((k) => k.id === s));
-  if (!owned.includes("horizon")) owned.unshift("horizon");
-  const skin = typeof r.skin === "string" && owned.includes(r.skin) ? r.skin : "horizon";
+  const st = r.stats && typeof r.stats === "object" ? r.stats : {};
   const s = r.settings && typeof r.settings === "object" ? r.settings : {};
-  const bestTimes: Record<string, number> = {};
-  if (r.bestTimes && typeof r.bestTimes === "object") {
-    for (const [k, v] of Object.entries(r.bestTimes)) if (typeof v === "number" && v > 0) bestTimes[k] = v;
-  }
-  let highest = Math.round(num(r.highestUnlocked, 0, 0, maxLvl));
-  for (const c of completed) highest = Math.max(highest, Math.min(maxLvl, c + 1));
-  return {
+  const ids = new Set(ACHIEVEMENTS.map((a) => a.id));
+  const achievements = Array.isArray(r.achievements) ? [...new Set(r.achievements.filter((x: unknown) => typeof x === "string" && ids.has(x)))] as string[] : [];
+  const out: SaveData = {
     version: SAVE_VERSION,
-    highestUnlocked: highest,
-    completed,
-    bestTimes,
-    gems: Math.floor(num(r.gems, 0, 0, 1e7)),
-    upgrades: ups,
-    skinsOwned: owned,
-    skin,
+    bestMass: num(r.bestMass, 0, 0, MAX_MASS),
+    runMass: num(r.runMass, 0, 0, MAX_MASS),
+    achievements,
+    stats: {
+      absorbed: Math.floor(num(st.absorbed, 0, 0, 1e15)),
+      planets: Math.floor(num(st.planets, 0, 0, 1e15)),
+      stars: Math.floor(num(st.stars, 0, 0, 1e15)),
+      galaxies: Math.floor(num(st.galaxies, 0, 0, 1e15)),
+      playTime: num(st.playTime, 0, 0, 1e12),
+    },
+    skin: "horizon",
     settings: {
       audio: bool(s.audio, d.settings.audio),
       sfx: num(s.sfx, d.settings.sfx, 0, 1),
@@ -82,95 +64,83 @@ export function validateSave(raw: unknown): SaveData {
       reduced: bool(s.reduced, d.settings.reduced),
     },
     tutorialDone: bool(r.tutorialDone, false),
-    objectives: strArr(r.objectives, []),
-    milestones: Array.isArray(r.milestones) ? r.milestones.filter((x: unknown) => typeof x === "number") : [],
-    campaignDone: bool(r.campaignDone, false) || completed.includes(maxLvl),
   };
+  // keep any achievements implied by best mass (e.g. after a partial save)
+  const fixed = unlockAchievements(out, out.bestMass);
+  if (typeof r.skin === "string" && skinOwned(fixed.save, r.skin)) fixed.save.skin = r.skin;
+  return fixed.save;
 }
 
-export function radiusForMass(m: number) { return 6 + 2 * Math.sqrt(Math.max(0, m)); }
-export function canAbsorb(playerMass: number, type: ObjType) { return playerMass >= OBJECTS[type].minMass; }
-
-export function upgradeMult(save: Pick<SaveData, "upgrades">, id: UpgradeId) {
-  const def = UPGRADES.find((u) => u.id === id)!;
-  return 1 + def.per * (save.upgrades[id] ?? 0);
+export function skinOwned(save: Pick<SaveData, "achievements">, id: string) {
+  const sk = SKINS.find((s) => s.id === id);
+  return !!sk && (sk.achievement === null || save.achievements.includes(sk.achievement));
 }
 
-export function upgradeCost(save: SaveData, id: UpgradeId): number | null {
-  const def = UPGRADES.find((u) => u.id === id)!;
-  const tier = save.upgrades[id];
-  return tier >= def.costs.length ? null : def.costs[tier];
+export function radiusForMass(m: number) { return 4 * Math.cbrt(Math.max(1, Math.min(MAX_MASS, m))); }
+export function canAbsorb(playerMass: number, kind: Kind | number) {
+  const k = typeof kind === "number" ? kindAt(kind) : kind;
+  return playerMass >= k.minMass;
 }
 
-/** Returns new save, or null when maxed / unaffordable. Never goes negative. */
-export function purchaseUpgrade(save: SaveData, id: UpgradeId): SaveData | null {
-  const cost = upgradeCost(save, id);
-  if (cost === null || save.gems < cost) return null;
-  return { ...save, gems: save.gems - cost, upgrades: { ...save.upgrades, [id]: save.upgrades[id] + 1 } };
+/** Add mass safely: never decreases, never becomes Infinity/NaN. */
+export function addMass(mass: number, gain: number) {
+  if (!Number.isFinite(gain) || gain <= 0) return mass;
+  const n = mass + gain;
+  return Number.isFinite(n) ? Math.min(MAX_MASS, n) : MAX_MASS;
 }
 
-export function purchaseSkin(save: SaveData, skinId: string): SaveData | null {
-  const skin = SKINS.find((s) => s.id === skinId);
-  if (!skin || save.skinsOwned.includes(skinId) || skin.unlock !== "gems" || save.gems < skin.price) return null;
-  return { ...save, gems: save.gems - skin.price, skinsOwned: [...save.skinsOwned, skinId], skin: skinId };
-}
-
-export interface RunStats { mass: number; time: number; counts: Partial<Record<ObjType, number>>; }
-export interface RewardLine { label: string; gems: number; }
-export interface LevelResult { save: SaveData; lines: RewardLine[]; total: number; objectivesDone: { label: string; done: boolean; isNew: boolean }[]; firstClear: boolean; campaignFinished: boolean; }
-
-export function objectiveMet(o: { kind: string; value: number; type?: ObjType }, stats: RunStats) {
-  if (o.kind === "time") return stats.time <= o.value;
-  if (o.kind === "count") return (stats.counts[o.type!] ?? 0) >= o.value;
-  return stats.mass >= o.value;
-}
-
-/** Apply a level completion. Base reward full on first clear, reduced on replay; objectives once ever. */
-export function completeLevel(save: SaveData, levelIndex: number, stats: RunStats): LevelResult {
-  const lvl = LEVELS[levelIndex];
-  const firstClear = !save.completed.includes(levelIndex);
-  const lines: RewardLine[] = [];
-  const base = firstClear ? lvl.reward : Math.max(1, Math.round(lvl.reward * PLAYER.replayFraction));
-  lines.push({ label: firstClear ? "Sector cleared" : "Replay reward", gems: base });
-  const newObj = [...save.objectives];
-  const objectivesDone = lvl.objectives.map((o) => {
-    const done = objectiveMet(o, stats);
-    const isNew = done && !newObj.includes(o.id);
-    if (isNew) { newObj.push(o.id); lines.push({ label: o.label, gems: o.gems }); }
-    return { label: o.label, done, isNew };
-  });
-  const rares = Math.min(5, stats.counts.rare ?? 0);
-  if (rares > 0) lines.push({ label: `Void relics x${rares}`, gems: rares * PLAYER.rareGem });
-  const last = levelIndex === LEVELS.length - 1;
-  const campaignFinished = last && !save.campaignDone;
-  if (campaignFinished) lines.push({ label: "Campaign complete", gems: PLAYER.campaignBonus });
-  const total = lines.reduce((a, l) => a + l.gems, 0);
-  const key = String(levelIndex);
-  const best = save.bestTimes[key];
-  const skinsOwned = campaignFinished && !save.skinsOwned.includes("crown") ? [...save.skinsOwned, "crown"] : save.skinsOwned;
+/** Apply one absorption to lifetime stats. */
+export function recordAbsorb(stats: LifetimeStats, kind: Kind): LifetimeStats {
   return {
-    firstClear, campaignFinished, lines, total, objectivesDone,
-    save: {
-      ...save,
-      gems: save.gems + total,
-      completed: firstClear ? [...save.completed, levelIndex] : save.completed,
-      highestUnlocked: Math.max(save.highestUnlocked, Math.min(LEVELS.length - 1, levelIndex + 1)),
-      bestTimes: { ...save.bestTimes, [key]: best ? Math.min(best, stats.time) : stats.time },
-      objectives: newObj,
-      campaignDone: save.campaignDone || last,
-      skinsOwned,
-    },
+    ...stats,
+    absorbed: stats.absorbed + 1,
+    planets: stats.planets + (kind.category === "planet" ? 1 : 0),
+    stars: stats.stars + (kind.category === "star" ? 1 : 0),
+    galaxies: stats.galaxies + (kind.category === "galaxy" ? 1 : 0),
   };
 }
 
-/** Claim mass milestone gems; each milestone only once ever. */
-export function claimMilestone(save: SaveData, mass: number): { save: SaveData; gems: number; milestone: number } | null {
-  const m = MILESTONES.find((x) => mass >= x.mass && !save.milestones.includes(x.mass));
-  if (!m) return null;
-  return { save: { ...save, gems: save.gems + m.gems, milestones: [...save.milestones, m.mass] }, gems: m.gems, milestone: m.mass };
+/** Unlock all achievements met by `mass` (and First Bite once anything is absorbed). Each unlocks only once. */
+export function unlockAchievements(save: SaveData, mass: number) {
+  const best = Math.max(save.bestMass, Math.min(MAX_MASS, Number.isFinite(mass) ? mass : MAX_MASS));
+  const got = new Set(save.achievements);
+  const unlocked = ACHIEVEMENTS.filter((a) => {
+    if (got.has(a.id)) return false;
+    return a.id === "first" ? save.stats.absorbed > 0 : best >= a.mass;
+  });
+  if (!unlocked.length && best === save.bestMass) return { save, unlocked };
+  return { save: { ...save, bestMass: best, achievements: [...save.achievements, ...unlocked.map((a) => a.id)] }, unlocked };
 }
 
-export function isLevelPlayable(save: SaveData, index: number) { return index >= 0 && index <= save.highestUnlocked && index < LEVELS.length; }
+/** Next locked mass achievement, with log-scale progress from the previous one. */
+export function nextAchievement(save: SaveData, mass: number) {
+  const list = ACHIEVEMENTS.filter((a) => a.id !== "first");
+  const idx = list.findIndex((a) => !save.achievements.includes(a.id) && a.mass > Math.max(save.bestMass, mass));
+  if (idx < 0) return null;
+  const a = list[idx];
+  const prev = idx > 0 ? list[idx - 1].mass : 1;
+  const lp = Math.log10(Math.max(1, prev)), ln = Math.log10(a.mass), lm = Math.log10(Math.max(1, mass));
+  return { achievement: a, progress: Math.min(1, Math.max(0, (lm - lp) / (ln - lp))) };
+}
+
+const SUFFIX = ["", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc", "UDc", "DDc", "TDc", "QaDc", "QiDc", "SxDc", "SpDc", "OcDc", "NoDc", "Vg"];
+/** 950 → "950", 1234 → "1.23K", 3.5e6 → "3.50M"; huge values fall back to scientific notation. */
+export function formatMass(n: number): string {
+  if (!Number.isFinite(n)) return n > 0 ? "1.00e300" : "0";
+  if (n < 1000) return String(Math.floor(Math.max(0, n)));
+  const e = Math.floor(Math.log10(n) / 3);
+  if (e >= SUFFIX.length) {
+    const [m, x] = n.toExponential(2).split("e");
+    return `${m}e${x.replace("+", "")}`;
+  }
+  const v = n / Math.pow(1000, e);
+  const fixed = v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
+  // rounding like 999.96K → "1000K": bump to next suffix
+  if (Number(fixed) >= 1000 && e + 1 < SUFFIX.length) return `1.00${SUFFIX[e + 1]}`;
+  return fixed + SUFFIX[e];
+}
+
+export const startMass = () => PLAYER.startMass;
 
 // ---------- storage ----------
 let memoryStore: string | null = null;

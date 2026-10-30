@@ -1,50 +1,49 @@
-// Canvas game engine: loop, input, physics, spawning, absorption, rendering.
-import { DEMO_LEVEL, LEVELS, OBJECTS, PLAYER, RARE_NAMES, SKINS, type LevelDef, type ObjType, type Skin } from "./data";
-import { canAbsorb, radiusForMass, type RunStats, type Settings } from "./logic";
+// Canvas game engine: loop, input, physics, endless procedural spawning, absorption, rendering.
+import { PLAYER, SKINS, kindAt, topEligibleIndex, type Kind, type Skin } from "./data";
+import { addMass, canAbsorb, formatMass, radiusForMass, type Settings } from "./logic";
 import { getSprite, rng, VARIANTS, type Sprite } from "./sprites";
 import { drawBlackHole } from "./blackhole";
 import { sfx } from "./audio";
 
 interface Body {
-  type: ObjType; x: number; y: number; vx: number; vy: number; r: number; mass: number;
+  kind: Kind; x: number; y: number; vx: number; vy: number; r: number; mass: number;
   rot: number; spin: number; variant: number; sprite: Sprite | null; seed: number;
   absorbing: boolean; t: number; dur: number; a0: number; d0: number; dir: number;
-  eligible: boolean; inField: boolean; dead: boolean; name: string; trailT: number;
+  eligible: boolean; inField: boolean; dead: boolean; trailT: number;
 }
 interface Particle { x: number; y: number; vx: number; vy: number; life: number; max: number; size: number; color: string; }
 interface Ring { x: number; y: number; r: number; max: number; life: number; dur: number; color: string; width: number; }
-interface FloatText { x: number; y: number; text: string; life: number; color: string; big: boolean; }
+interface FloatText { text: string; life: number; color: string; big: boolean; }
 
-export interface HudState { mass: number; target: number; time: number; levelIndex: number; }
+export interface HudState { mass: number; time: number; }
 export interface EngineCallbacks {
   onHud?: (h: HudState) => void;
-  onComplete?: (stats: RunStats) => void;
   onPauseRequest?: () => void;
   onBlur?: () => void;
   onToast?: (msg: string) => void;
   onTutorial?: (ev: "moved" | "pulled" | "absorbed") => void;
-  onMass?: (mass: number) => void;
+  onAbsorb?: (kind: Kind, gain: number, mass: number) => void;
 }
-export interface EngineConfig { upgrades: Record<string, number>; skin: string; settings: Settings; }
+export interface EngineConfig { skin: string; settings: Settings; }
 
 const MAX_PARTICLES = 420;
 const TAU = Math.PI * 2;
+const SPAWN_OFFSETS: [number, number][] = [[-4, 10], [-3, 18], [-2, 26], [-1, 26], [0, 14], [1, 6], [2, 2]];
+const ERA_HUES: [number, number][] = [[220, 260], [200, 250], [160, 220], [270, 210], [330, 270], [300, 200], [20, 300], [40, 280], [180, 320]];
 
 export class Engine {
   canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; cb: EngineCallbacks;
   w = 0; h = 0; dpr = 1; raf = 0; last = 0; destroyed = false;
-  mode: "demo" | "play" = "demo"; paused = false; completing = 0;
-  level: LevelDef = DEMO_LEVEL; levelIndex = -1;
+  mode: "demo" | "play" = "demo"; paused = false;
   bodies: Body[] = []; particles: Particle[] = []; pool: Particle[] = []; rings: Ring[] = []; texts: FloatText[] = [];
   player = { x: 0, y: 0, vx: 0, vy: 0, mass: 10, disp: 10 };
   cam = { x: 0, y: 0, zoom: 1 }; bgOff = { x: 0, y: 0 };
   time = 0; runTime = 0; shake = 0; flash = 0; flashColor = "#fff"; pulse = 0;
   keys = new Set<string>(); joy = { x: 0, y: 0 };
-  cfg: EngineConfig = { upgrades: {}, skin: "horizon", settings: { audio: true, sfx: 0.7, music: 0.4, shake: true, reduced: false } };
+  cfg: EngineConfig = { skin: "horizon", settings: { audio: true, sfx: 0.7, music: 0.4, shake: true, reduced: false } };
   skin: Skin = SKINS[0];
-  stats: RunStats = { mass: 0, time: 0, counts: {} };
-  notified = new Set<ObjType>(); nearToast = false; hudT = 0; movedDist = 0; movedSent = false; pulledSent = false;
-  highlight = false; demoDir = 0; seedN = 1;
+  topIdx = 0; hudT = 0; movedDist = 0; movedSent = false; pulledSent = false;
+  highlight = false; demoDir = 0; seedN = 1; era = -1;
   starTiles: HTMLCanvasElement[] = []; nebula: HTMLCanvasElement | null = null; nebulaHues = "";
   shooting: { x: number; y: number; vx: number; vy: number; life: number } | null = null;
 
@@ -73,12 +72,11 @@ export class Engine {
   }
 
   setConfig(c: EngineConfig) { this.cfg = c; this.skin = SKINS.find((s) => s.id === c.skin) ?? SKINS[0]; }
-  up(id: string) { const per = { gravity: 0.12, growth: 0.07, speed: 0.07, efficiency: 0.15 }[id] ?? 0; return 1 + per * (this.cfg.upgrades[id] ?? 0); }
 
   // ---------- input ----------
   onKeyDown = (e: KeyboardEvent) => {
     const k = e.key.toLowerCase();
-    if (k === "escape") { if (this.mode === "play" && !this.completing) this.cb.onPauseRequest?.(); return; }
+    if (k === "escape") { if (this.mode === "play") this.cb.onPauseRequest?.(); return; }
     if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) {
       const tgt = e.target as HTMLElement | null;
       if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "SELECT")) return;
@@ -87,7 +85,7 @@ export class Engine {
     }
   };
   onKeyUp = (e: KeyboardEvent) => { this.keys.delete(e.key.toLowerCase()); };
-  onBlurEv = () => { this.resetInput(); if (this.mode === "play" && !this.paused && !this.completing) this.cb.onBlur?.(); };
+  onBlurEv = () => { this.resetInput(); if (this.mode === "play" && !this.paused) this.cb.onBlur?.(); };
   onVis = () => { if (document.hidden) this.onBlurEv(); };
   resetInput() { this.keys.clear(); this.joy.x = 0; this.joy.y = 0; }
   setJoystick(x: number, y: number) { this.joy.x = x; this.joy.y = y; }
@@ -100,69 +98,81 @@ export class Engine {
   };
 
   // ---------- state ----------
-  private reset(level: LevelDef) {
-    this.level = level;
+  private reset(mass: number) {
     this.bodies = []; this.rings = []; this.texts = [];
     for (const p of this.particles) this.pool.push(p);
     this.particles = [];
-    this.player = { x: 0, y: 0, vx: 0, vy: 0, mass: level.startMass, disp: level.startMass };
-    this.cam = { x: 0, y: 0, zoom: this.zoomFor(radiusForMass(level.startMass)) };
-    this.time = 0; this.runTime = 0; this.shake = 0; this.flash = 0; this.completing = 0;
-    this.stats = { mass: level.startMass, time: 0, counts: {} };
-    this.notified = new Set(Object.keys(level.weights).filter((t) => canAbsorb(level.startMass, t as ObjType)) as ObjType[]);
-    this.nearToast = false; this.movedDist = 0; this.movedSent = false; this.pulledSent = false;
+    this.player = { x: 0, y: 0, vx: 0, vy: 0, mass, disp: mass };
+    this.cam = { x: 0, y: 0, zoom: this.zoomFor(mass) };
+    this.time = 0; this.runTime = 0; this.shake = 0; this.flash = 0;
+    this.topIdx = topEligibleIndex(mass);
+    this.movedDist = 0; this.movedSent = false; this.pulledSent = false;
     this.resetInput();
-    this.buildNebula(level.hues);
-    for (let i = 0; i < level.density; i++) this.spawn(true);
+    this.updateEra(true);
+    for (let i = 0; i < PLAYER.density; i++) this.spawn(true);
   }
-  startDemo() { this.mode = "demo"; this.paused = false; this.levelIndex = -1; this.reset(DEMO_LEVEL); }
-  startLevel(i: number) { this.mode = "play"; this.paused = false; this.levelIndex = i; this.reset(LEVELS[i]); this.emitHud(); }
+  startDemo() { this.mode = "demo"; this.paused = false; this.reset(300); }
+  startRun(mass: number) { this.mode = "play"; this.paused = false; this.reset(Math.max(PLAYER.startMass, mass)); this.emitHud(); }
   pause() { this.paused = true; this.resetInput(); }
   resume() { this.paused = false; this.resetInput(); this.last = performance.now(); }
 
-  zoomFor(r: number) { const base = Math.min(1.8, Math.max(0.9, Math.min(this.w, this.h) / 520)); return base * Math.pow(12 / r, 0.7); }
+  /** Black hole occupies a bounded share of the screen: grows visibly early, then levels off. */
+  screenRadius(mass: number) {
+    const g = 1 - Math.exp(-Math.log10(Math.max(1, mass / PLAYER.startMass)) / 4);
+    return Math.min(this.w, this.h) * (0.035 + 0.05 * g);
+  }
+  zoomFor(mass: number) { return this.screenRadius(mass) / radiusForMass(mass); }
   viewRadius() { return Math.hypot(this.w, this.h) / 2 / this.cam.zoom; }
 
+  private updateEra(force = false) {
+    const era = Math.floor(this.topIdx / 3);
+    if (era === this.era && !force) return;
+    this.era = era;
+    this.buildNebula(ERA_HUES[era % ERA_HUES.length].map((h) => (h + Math.floor(era / ERA_HUES.length) * 37) % 360) as [number, number]);
+  }
+
   // ---------- spawning ----------
-  private pickType(forceEligible: boolean): ObjType {
-    let entries = Object.entries(this.level.weights) as [ObjType, number][];
-    if (forceEligible) {
-      const el = entries.filter(([t]) => canAbsorb(this.player.mass, t));
-      entries = el.length ? el : [entries.reduce((a, b) => (OBJECTS[a[0]].minMass < OBJECTS[b[0]].minMass ? a : b))];
+  private pickKind(forceEligible: boolean): Kind {
+    const opts: [number, number][] = [];
+    for (const [o, w] of SPAWN_OFFSETS) {
+      const i = this.topIdx + o;
+      if (i < 0 || (forceEligible && o > 0)) continue;
+      // skip objects that would be invisibly small on screen
+      const k = kindAt(i);
+      if (radiusForMass(k.mass) * 0.8 * k.size * this.cam.zoom < 1.2 && o < 0) continue;
+      opts.push([i, w]);
     }
-    const total = entries.reduce((a, [, w]) => a + w, 0);
+    if (!opts.length) opts.push([this.topIdx, 1]);
+    const total = opts.reduce((a, [, w]) => a + w, 0);
     let r = Math.random() * total;
-    for (const [t, w] of entries) { r -= w; if (r <= 0) return t; }
-    return entries[0][0];
+    for (const [i, w] of opts) { r -= w; if (r <= 0) return kindAt(i); }
+    return kindAt(opts[0][0]);
   }
 
   private spawn(initial: boolean, forceEligible = false) {
-    const type = this.pickType(forceEligible);
-    const def = OBJECTS[type];
+    const kind = this.pickKind(forceEligible);
+    const k = Math.random();
+    const mass = kind.mass * (0.7 + 0.6 * k);
+    const r = radiusForMass(mass) * 0.8 * kind.size;
     const vr = this.viewRadius();
     const pr = radiusForMass(this.player.mass);
     let x = 0, y = 0;
     for (let tries = 0; tries < 6; tries++) {
       const a = Math.random() * TAU;
-      const d = initial ? pr * 4 + Math.random() * vr * 1.7 : vr * (1.1 + Math.random() * 0.7);
+      const d = initial ? pr * 4 + r + Math.random() * vr * 1.7 : vr * (1.1 + Math.random() * 0.7) + r;
       x = this.player.x + Math.cos(a) * d; y = this.player.y + Math.sin(a) * d;
-      if (def.tier === 0) break;
-      const r = def.radius[1] * 2.5;
-      if (!this.bodies.some((b) => b.r > 12 && Math.abs(b.x - x) < r + b.r && Math.abs(b.y - y) < r + b.r)) break;
+      if (kind.tier === 0) break;
+      if (!this.bodies.some((b) => b.r > r * 0.3 && Math.abs(b.x - x) < r * 2.5 + b.r && Math.abs(b.y - y) < r * 2.5 + b.r)) break;
     }
-    const k = Math.random();
-    const seed = this.seedN++;
     const variant = Math.floor(Math.random() * VARIANTS);
+    const drift = r * 1.4;
     this.bodies.push({
-      type, x, y,
-      vx: (Math.random() - 0.5) * 14, vy: (Math.random() - 0.5) * 14,
-      r: def.radius[0] + (def.radius[1] - def.radius[0]) * k,
-      mass: Math.round(def.mass[0] + (def.mass[1] - def.mass[0]) * k),
-      rot: Math.random() * TAU, spin: (Math.random() - 0.5) * (def.tier === 0 ? 1.6 : 0.3),
-      variant, sprite: type === "dust" ? null : getSprite(type, variant), seed,
-      absorbing: false, t: 0, dur: def.absorbTime, a0: 0, d0: 0, dir: 1,
+      kind, x, y, mass, r,
+      vx: (Math.random() - 0.5) * drift, vy: (Math.random() - 0.5) * drift,
+      rot: Math.random() * TAU, spin: (Math.random() - 0.5) * (kind.tier === 0 ? 1.6 : kind.tier === 3 ? 0.15 : 0.3),
+      variant, sprite: getSprite(kind, variant), seed: this.seedN++,
+      absorbing: false, t: 0, dur: kind.absorbTime, a0: 0, d0: 0, dir: 1,
       eligible: false, inField: false, dead: false, trailT: 0,
-      name: type === "rare" ? RARE_NAMES[variant % RARE_NAMES.length] : def.name,
     });
   }
 
@@ -176,39 +186,41 @@ export class Engine {
     this.raf = requestAnimationFrame(this.loop);
   };
 
+  /** Keep coordinates near the origin so precision holds at any scale. */
+  private rebase() {
+    const P = this.player;
+    const lim = radiusForMass(P.mass) * 2000;
+    if (Math.abs(P.x) < lim && Math.abs(P.y) < lim) return;
+    const ox = P.x, oy = P.y;
+    P.x = 0; P.y = 0; this.cam.x -= ox; this.cam.y -= oy;
+    for (const b of this.bodies) { b.x -= ox; b.y -= oy; }
+    for (const p of this.particles) { p.x -= ox; p.y -= oy; }
+    for (const r of this.rings) { r.x -= ox; r.y -= oy; }
+  }
+
   private update(dt: number) {
     this.time += dt;
     const P = this.player;
     const playing = this.mode === "play";
-    const frozen = this.completing > 0;
+    if (playing) this.runTime += dt;
 
-    if (frozen) {
-      this.completing += dt;
-      P.vx *= 0.9; P.vy *= 0.9;
-      if (this.completing > 1.6 && this.completing - dt <= 1.6) {
-        this.stats.time = this.runTime; this.stats.mass = Math.floor(P.mass);
-        this.cb.onComplete?.({ ...this.stats, counts: { ...this.stats.counts } });
-      }
-    } else if (playing) this.runTime += dt;
-
-    // input
     let ix = 0, iy = 0;
-    if (!frozen) {
-      if (playing) {
-        if (this.keys.has("a") || this.keys.has("arrowleft")) ix -= 1;
-        if (this.keys.has("d") || this.keys.has("arrowright")) ix += 1;
-        if (this.keys.has("w") || this.keys.has("arrowup")) iy -= 1;
-        if (this.keys.has("s") || this.keys.has("arrowdown")) iy += 1;
-        ix += this.joy.x; iy += this.joy.y;
-      } else {
-        this.demoDir += (Math.sin(this.time * 0.37) * 0.6 + Math.sin(this.time * 0.13)) * dt;
-        ix = Math.cos(this.demoDir) * 0.55; iy = Math.sin(this.demoDir) * 0.55;
-      }
+    if (playing) {
+      if (this.keys.has("a") || this.keys.has("arrowleft")) ix -= 1;
+      if (this.keys.has("d") || this.keys.has("arrowright")) ix += 1;
+      if (this.keys.has("w") || this.keys.has("arrowup")) iy -= 1;
+      if (this.keys.has("s") || this.keys.has("arrowdown")) iy += 1;
+      ix += this.joy.x; iy += this.joy.y;
+    } else {
+      this.demoDir += (Math.sin(this.time * 0.37) * 0.6 + Math.sin(this.time * 0.13)) * dt;
+      ix = Math.cos(this.demoDir) * 0.55; iy = Math.sin(this.demoDir) * 0.55;
     }
     const il = Math.hypot(ix, iy); if (il > 1) { ix /= il; iy /= il; }
-    P.disp += (P.mass - P.disp) * (1 - Math.exp(-dt * 5));
+    // smooth visual growth (in log space so huge jumps stay smooth)
+    const lg = Math.log(Math.max(1, P.disp)), lt = Math.log(Math.max(1, P.mass));
+    P.disp = Math.exp(lg + (lt - lg) * (1 - Math.exp(-dt * 4)));
     const pr = radiusForMass(P.disp);
-    const maxSpeed = PLAYER.baseSpeed * Math.pow(pr / 12, 0.72) * this.up("speed");
+    const maxSpeed = PLAYER.speedPerRadius * pr * (this.screenRadius(P.disp) > 0 ? 1 : 1);
     const rate = il > 0.05 ? PLAYER.accel : PLAYER.decel;
     const f = 1 - Math.exp(-dt * rate);
     P.vx += (ix * maxSpeed - P.vx) * f; P.vy += (iy * maxSpeed - P.vy) * f;
@@ -218,17 +230,17 @@ export class Engine {
       if (this.movedDist > 260) { this.movedSent = true; this.cb.onTutorial?.("moved"); }
     }
 
-    // camera
     const prevX = this.cam.x, prevY = this.cam.y;
     const cf = 1 - Math.exp(-dt * 6);
     this.cam.x += (P.x - this.cam.x) * cf; this.cam.y += (P.y - this.cam.y) * cf;
-    this.cam.zoom += (this.zoomFor(pr) - this.cam.zoom) * (1 - Math.exp(-dt * 2));
+    const zt = this.zoomFor(P.disp);
+    this.cam.zoom = Math.exp(Math.log(this.cam.zoom) + (Math.log(zt) - Math.log(this.cam.zoom)) * (1 - Math.exp(-dt * 2)));
     this.bgOff.x += (this.cam.x - prevX) * this.cam.zoom; this.bgOff.y += (this.cam.y - prevY) * this.cam.zoom;
+    this.rebase();
 
-    // bodies
-    const gravR = pr * PLAYER.gravityMult * this.up("gravity");
-    const eff = this.up("efficiency");
+    const gravR = pr * PLAYER.gravityMult;
     const vr = this.viewRadius();
+    const z = this.cam.zoom;
     let eligibleCount = 0;
     for (const b of this.bodies) {
       b.rot += b.spin * dt;
@@ -241,40 +253,38 @@ export class Engine {
         b.x = P.x + Math.cos(ang) * d; b.y = P.y + Math.sin(ang) * d;
         b.rot += b.dir * dt * 6 * e;
         b.trailT -= dt;
-        if (OBJECTS[b.type].tier >= 1 && b.trailT <= 0) { b.trailT = 0.03; this.emit(b.x, b.y, 1, b.sprite?.tint ?? "#fff", b.r * 0.25, 20); }
+        if (b.kind.tier >= 1 && b.trailT <= 0) { b.trailT = 0.03; this.emit(b.x, b.y, 1, b.sprite?.tint ?? "#fff", b.r * z * 0.25, 20); }
         if (p >= 1 && !b.dead) this.consume(b);
         continue;
       }
       const dx = P.x - b.x, dy = P.y - b.y;
-      const d = Math.hypot(dx, dy) || 0.001;
-      b.eligible = canAbsorb(P.mass, b.type);
+      const d = Math.hypot(dx, dy) || 1e-9;
+      b.eligible = canAbsorb(P.mass, b.kind);
       if (b.eligible) eligibleCount++;
       b.inField = d < gravR + b.r;
-      if (b.inField && b.eligible && !frozen) {
+      if (b.inField && b.eligible) {
         if (playing && !this.pulledSent) { this.pulledSent = true; this.cb.onTutorial?.("pulled"); }
         const closeness = 1 - Math.min(1, d / (gravR + b.r));
-        const a = 520 * Math.pow(pr / 12, 0.8) * OBJECTS[b.type].pull * eff * (0.4 + 2.6 * closeness * closeness);
+        const a = 42 * pr * b.kind.pull * (0.4 + 2.6 * closeness * closeness);
         const nx = dx / d, ny = dy / d;
         b.vx += (nx * a - ny * a * 0.35) * dt; b.vy += (ny * a + nx * a * 0.35) * dt;
         b.vx *= 1 - Math.min(1, dt * 1.5); b.vy *= 1 - Math.min(1, dt * 1.5);
         if (d < pr * 0.95 + b.r * 0.35) {
           b.absorbing = true; b.t = 0; b.a0 = Math.atan2(-dy, -dx); b.d0 = d;
           b.dir = (nx * b.vy - ny * b.vx) >= 0 ? -1 : 1;
-          b.dur = OBJECTS[b.type].absorbTime / eff;
+          b.dur = b.kind.absorbTime;
         }
       } else {
         b.vx *= 1 - Math.min(1, dt * 0.2); b.vy *= 1 - Math.min(1, dt * 0.2);
       }
       b.x += b.vx * dt; b.y += b.vy * dt;
-      if (d > vr * 2.4) b.dead = true;
+      if (d > vr * 2.4 + b.r) b.dead = true;
+      else if (b.r * z < 0.5) b.dead = true; // outgrown: too small to see, recycle
     }
     if (this.bodies.some((b) => b.dead)) this.bodies = this.bodies.filter((b) => !b.dead);
-    if (!frozen) {
-      let n = 0;
-      while (this.bodies.length < this.level.density && n++ < 4) this.spawn(false, eligibleCount < this.level.density * 0.4);
-    }
+    let n = 0;
+    while (this.bodies.length < PLAYER.density && n++ < 5) this.spawn(false, eligibleCount < PLAYER.density * 0.45);
 
-    // effects
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i]; p.life -= dt;
       if (p.life <= 0) { this.pool.push(p); this.particles[i] = this.particles[this.particles.length - 1]; this.particles.pop(); continue; }
@@ -282,6 +292,7 @@ export class Engine {
     }
     this.rings = this.rings.filter((r) => (r.life += dt) < r.dur);
     this.texts = this.texts.filter((t) => (t.life += dt) < 1.3);
+    if (this.texts.length > 6) this.texts = this.texts.slice(-6);
     this.shake *= Math.exp(-dt * 8); this.flash = Math.max(0, this.flash - dt * 2.5); this.pulse *= Math.exp(-dt * 4);
     if (!this.shooting && Math.random() < dt * 0.15) {
       const a = 0.4 + Math.random() * 0.5;
@@ -292,53 +303,49 @@ export class Engine {
     if (playing) {
       this.hudT -= dt;
       if (this.hudT <= 0) { this.hudT = 0.08; this.emitHud(); }
-    } else if (P.mass > 2200) { P.mass = 300; }
+    } else if (P.mass > 6000) { P.mass = 300; this.topIdx = topEligibleIndex(300); }
   }
 
-  emitHud() { this.cb.onHud?.({ mass: Math.floor(this.player.mass), target: this.level.target, time: this.runTime, levelIndex: this.levelIndex }); }
+  emitHud() { this.cb.onHud?.({ mass: this.player.mass, time: this.runTime }); }
 
   private consume(b: Body) {
     b.dead = true;
     const P = this.player;
-    const def = OBJECTS[b.type];
-    const gain = Math.max(1, Math.round(b.mass * this.up("growth")));
-    const before = P.mass;
-    P.mass += gain;
+    const kind = b.kind;
+    const gain = Math.max(1, kind.mass < 1000 ? Math.round(b.mass) : b.mass);
+    P.mass = addMass(P.mass, gain);
     const tint = b.sprite?.tint ?? "#bfefff";
     const playing = this.mode === "play";
     const red = this.cfg.settings.reduced;
-    if (def.tier === 0) {
+    const z = this.cam.zoom;
+    const prW = radiusForMass(P.mass);
+    // relative size of the meal drives feedback strength
+    const rel = Math.min(1, b.r / prW);
+    const big = kind.tier >= 2 || rel > 0.45;
+    if (kind.tier === 0 && rel < 0.4) {
       this.emit(P.x, P.y, red ? 2 : 5, tint, 2, 80);
       if (playing) sfx.absorbSmall();
     } else {
-      this.emit(P.x, P.y, red ? 10 : def.tier >= 2 ? 60 : 28, tint, 3, def.tier >= 2 ? 420 : 240);
-      this.rings.push({ x: P.x, y: P.y, r: radiusForMass(P.mass), max: radiusForMass(P.mass) * (def.tier >= 2 ? 6 : 3.5), life: 0, dur: def.tier >= 2 ? 0.9 : 0.6, color: tint, width: def.tier >= 2 ? 6 : 3 });
-      if (playing) { if (def.tier >= 2) sfx.absorbStar(); else sfx.absorbPlanet(); }
-      if (this.cfg.settings.shake) this.shake = Math.min(14, this.shake + (def.tier >= 2 ? 10 : 4));
-      if (def.tier >= 2) { this.flash = red ? 0.12 : 0.3; this.flashColor = tint; }
-      this.pulse = def.tier >= 2 ? 1 : 0.5;
+      this.emit(P.x, P.y, red ? 10 : big ? 60 : 28, tint, 3, big ? 420 : 240);
+      this.rings.push({ x: P.x, y: P.y, r: prW, max: prW * (big ? 6 : 3.5), life: 0, dur: big ? 0.9 : 0.6, color: tint, width: big ? 6 : 3 });
+      if (playing) { if (big) sfx.absorbStar(); else sfx.absorbPlanet(); }
+      if (this.cfg.settings.shake) this.shake = Math.min(14, this.shake + (big ? 9 : 4));
+      if (big) { this.flash = red ? 0.1 : 0.25; this.flashColor = tint; }
+      this.pulse = big ? 1 : 0.5;
     }
+    void z;
     if (playing) {
-      this.texts.push({ x: P.x, y: P.y, text: `+${gain}`, life: 0, color: tint, big: def.tier >= 1 });
-      if (def.tier >= 1) this.texts.push({ x: P.x, y: P.y, text: b.name, life: -0.05, color: "#ffffff", big: false });
-      this.stats.counts[b.type] = (this.stats.counts[b.type] ?? 0) + 1;
+      this.texts.push({ text: `+${formatMass(gain)} MASS`, life: 0, color: tint, big: kind.tier >= 1 });
+      if (kind.tier >= 1) this.texts.push({ text: kind.name, life: -0.05, color: "#ffffff", big: false });
       this.cb.onTutorial?.("absorbed");
-      this.cb.onMass?.(P.mass);
-      for (const t of Object.keys(this.level.weights) as ObjType[]) {
-        if (!this.notified.has(t) && canAbsorb(P.mass, t)) {
-          this.notified.add(t); this.cb.onToast?.(`${OBJECTS[t].plural} can now be absorbed`);
-          this.rings.push({ x: P.x, y: P.y, r: radiusForMass(P.mass), max: radiusForMass(P.mass) * 5, life: 0, dur: 0.8, color: this.skin.mid, width: 4 });
-        }
-      }
-      const tgt = this.level.target;
-      if (!this.nearToast && P.mass >= tgt * 0.85 && P.mass < tgt) { this.nearToast = true; this.cb.onToast?.("Almost there — the sector is nearly consumed"); }
-      if (before < tgt && P.mass >= tgt && !this.completing) {
-        this.completing = 0.0001; this.emitHud();
-        this.rings.push({ x: P.x, y: P.y, r: radiusForMass(P.mass), max: radiusForMass(P.mass) * 10, life: 0, dur: 1.4, color: this.skin.hot, width: 8 });
-        this.emit(P.x, P.y, red ? 20 : 90, this.skin.mid, 3, 500);
-        this.flash = 0.35; this.flashColor = this.skin.glow; this.pulse = 1.5;
-        sfx.complete();
-      }
+      this.cb.onAbsorb?.(kind, gain, P.mass);
+    }
+    const nt = topEligibleIndex(P.mass);
+    if (nt > this.topIdx) {
+      for (let i = this.topIdx + 1; i <= nt; i++) if (playing) this.cb.onToast?.(`${kindAt(i).plural} can now be absorbed`);
+      this.topIdx = nt;
+      this.rings.push({ x: P.x, y: P.y, r: prW, max: prW * 5, life: 0, dur: 0.8, color: this.skin.mid, width: 4 });
+      if (playing) this.updateEra();
     }
   }
 
@@ -425,30 +432,28 @@ export class Engine {
     const cx = w / 2 - this.cam.x * z + sx, cy = h / 2 - this.cam.y * z + sy;
     const P = this.player; const pr = radiusForMass(P.disp);
     const px = cx + P.x * z, py = cy + P.y * z;
-    const gravR = pr * PLAYER.gravityMult * this.up("gravity");
+    const gravR = pr * PLAYER.gravityMult;
     const red = this.cfg.settings.reduced;
     const t = this.time;
+    const prS = pr * z;
 
-    // gravity field
     ctx.strokeStyle = this.skin.mid; ctx.globalAlpha = 0.12; ctx.lineWidth = 1;
     ctx.setLineDash([4, 10]); ctx.lineDashOffset = -t * 20;
     ctx.beginPath(); ctx.arc(px, py, gravR * z, 0, TAU); ctx.stroke();
     ctx.setLineDash([]); ctx.globalAlpha = 1;
 
-    // bodies
     for (const b of this.bodies) {
       let bx = cx + b.x * z, by = cy + b.y * z;
       const pad = b.sprite ? b.sprite.pad : 3;
       const br = b.r * z;
       if (bx < -br * pad || bx > w + br * pad || by < -br * pad || by > h + br * pad) continue;
-      const def = OBJECTS[b.type];
       let scale = 1, stretch = 0;
       const dpx = px - bx, dpy = py - by; const dd = Math.hypot(dpx, dpy) || 1;
       if (b.absorbing) { const p = Math.min(1, b.t / b.dur); scale = 1 - 0.92 * p * p; stretch = 0.6 * p; }
       else if (b.inField && b.eligible) stretch = 0.25 * (1 - Math.min(1, dd / (gravR * z)));
       else if (!b.eligible && dd < gravR * z * 0.9) { const k = 1 - dd / (gravR * z * 0.9); bx += Math.sin(t * 28 + b.seed) * br * 0.05 * k; by += Math.cos(t * 23 + b.seed) * br * 0.05 * k; }
       const ang = Math.atan2(dpy, dpx);
-      if (b.type === "dust") {
+      if (!b.sprite) {
         const rr = Math.max(0.9, br * scale);
         ctx.fillStyle = b.seed % 3 ? "#bdf3ff" : "#ffffff";
         if (!red) { ctx.globalAlpha = 0.25; ctx.beginPath(); ctx.arc(bx, by, rr * 2.6, 0, TAU); ctx.fill(); }
@@ -457,19 +462,18 @@ export class Engine {
           ctx.strokeStyle = "#bdf3ff"; ctx.globalAlpha = 0.4; ctx.lineWidth = rr;
           ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx - Math.cos(ang) * rr * 5, by - Math.sin(ang) * rr * 5); ctx.stroke(); ctx.globalAlpha = 1;
         }
-      } else if (b.sprite) {
+      } else {
         const s = b.sprite; const k = (b.r / s.R) * z * scale;
         ctx.save(); ctx.translate(bx, by);
         if (stretch > 0) { ctx.rotate(ang); ctx.scale(1 + stretch, 1 - stretch * 0.45); ctx.rotate(-ang); }
-        if (def.tier >= 2 && !red) this.starFx(b, k * s.R, t);
+        if (b.kind.tier >= 2 && !red) this.starFx(b, k * s.R, t);
         ctx.rotate(b.rot);
         const size = s.c.width * k;
         ctx.drawImage(s.c, -size / 2, -size / 2, size, size);
         ctx.restore();
       }
-      // eligibility indicators (shape + colour, not colour alone)
-      if (!b.absorbing && b.type !== "dust") {
-        if (!b.eligible && dd < gravR * z * 1.4) {
+      if (!b.absorbing && b.sprite) {
+        if (!b.eligible && dd < gravR * z * 1.4 + br) {
           const rr = br * 1.25 + 4;
           ctx.strokeStyle = "rgba(255,120,140,0.6)"; ctx.lineWidth = 1.5; ctx.setLineDash([3, 5]);
           ctx.beginPath(); ctx.arc(bx, by, rr, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
@@ -479,30 +483,41 @@ export class Engine {
           ctx.strokeStyle = this.skin.mid; ctx.globalAlpha = 0.3 + 0.4 * pulse; ctx.lineWidth = 1.5;
           ctx.beginPath(); ctx.arc(bx, by, br * 1.2 + 3, 0, TAU); ctx.stroke(); ctx.globalAlpha = 1;
         }
-      } else if (this.highlight && b.eligible && b.type === "dust" && dd < Math.min(w, h) * 0.45) {
+      } else if (this.highlight && b.eligible && !b.sprite && dd < Math.min(w, h) * 0.45) {
         ctx.strokeStyle = this.skin.mid; ctx.globalAlpha = 0.4 + 0.4 * Math.sin(t * 6); ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(bx, by, 7, 0, TAU); ctx.stroke(); ctx.globalAlpha = 1;
       }
     }
 
-    // rings
     for (const r of this.rings) {
       const p = r.life / r.dur; const rad = (r.r + (r.max - r.r) * (1 - Math.pow(1 - p, 3))) * z;
       ctx.strokeStyle = r.color; ctx.globalAlpha = (1 - p) * 0.8; ctx.lineWidth = r.width * (1 - p) + 0.5;
       ctx.beginPath(); ctx.arc(cx + r.x * z, cy + r.y * z, rad, 0, TAU); ctx.stroke();
     }
     ctx.globalAlpha = 1;
-    // particles
     ctx.globalCompositeOperation = "lighter";
     for (const p of this.particles) {
       ctx.globalAlpha = p.life / p.max; ctx.fillStyle = p.color;
-      ctx.beginPath(); ctx.arc(cx + p.x * z, cy + p.y * z, Math.max(0.6, p.size * Math.max(0.5, z * 1.5)), 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(cx + p.x * z, cy + p.y * z, Math.max(0.6, p.size), 0, TAU); ctx.fill();
+    }
+    // grandeur: orbiting swirl and lensing ring scale with how far the player has grown
+    const grand = Math.min(1, this.topIdx / 14);
+    if (!red && grand > 0) {
+      const n = Math.floor(8 + 32 * grand);
+      for (let i = 0; i < n; i++) {
+        const rr = prS * (1.6 + ((i * 0.618) % 1) * 2.2 * (0.6 + grand));
+        const a = t * (1.6 / (1 + (rr / prS) * 0.4)) + i * 2.399;
+        ctx.globalAlpha = 0.25 + 0.5 * grand * ((i % 3) / 3);
+        ctx.fillStyle = i % 2 ? this.skin.mid : this.skin.outer;
+        ctx.beginPath(); ctx.arc(px + Math.cos(a) * rr, py + Math.sin(a) * rr * 0.55, 1 + grand * 1.5, 0, TAU); ctx.fill();
+      }
+      ctx.globalAlpha = 0.15 * grand; ctx.strokeStyle = this.skin.hot; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(px, py, prS * (3 + 0.15 * Math.sin(t * 1.5)), 0, TAU); ctx.stroke();
     }
     ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
 
-    drawBlackHole(ctx, px, py, pr * z * (1 + this.pulse * 0.06), t, this.skin, red, this.pulse * 0.6);
+    drawBlackHole(ctx, px, py, prS * (1 + this.pulse * 0.06), t, this.skin, red, this.pulse * 0.6 + grand * 0.8);
 
-    // floating texts
     ctx.textAlign = "center";
     for (const tx of this.texts) {
       if (tx.life < 0) continue;
@@ -511,11 +526,10 @@ export class Engine {
       ctx.font = `${tx.big ? 700 : 600} ${tx.big ? 20 : 13}px Sora, system-ui, sans-serif`;
       ctx.fillStyle = tx.color;
       const off = tx.big ? 0 : 18;
-      ctx.fillText(tx.text, px, py - pr * z * 1.6 - 14 - p * 40 + off);
+      ctx.fillText(tx.text, px, py - prS * 1.6 - 14 - p * 40 + off);
     }
     ctx.globalAlpha = 1;
     if (this.flash > 0) { ctx.fillStyle = this.flashColor; ctx.globalAlpha = this.flash * 0.5; ctx.fillRect(0, 0, w, h); ctx.globalAlpha = 1; }
-    // vignette
     const v = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.35, w / 2, h / 2, Math.max(w, h) * 0.75);
     v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, "rgba(0,0,10,0.55)");
     ctx.fillStyle = v; ctx.fillRect(0, 0, w, h);
@@ -523,7 +537,7 @@ export class Engine {
 
   private starFx(b: Body, R: number, t: number) {
     const ctx = this.ctx;
-    if (b.type === "star") {
+    if (b.kind.style === "star") {
       const tint = b.sprite!.tint;
       ctx.save(); ctx.rotate(t * 0.15 + b.seed);
       ctx.globalCompositeOperation = "lighter";
@@ -534,14 +548,14 @@ export class Engine {
         ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0, -R * 0.12); ctx.lineTo(len, 0); ctx.lineTo(0, R * 0.12); ctx.fill();
       }
       ctx.restore(); ctx.globalCompositeOperation = "source-over";
-    } else if (b.type === "neutronStar") {
+    } else if (b.kind.style === "neutron") {
       ctx.save(); ctx.rotate(t * 2.2 + b.seed); ctx.globalCompositeOperation = "lighter";
       for (const dir of [1, -1]) {
         const g = ctx.createLinearGradient(0, 0, 0, dir * R * 6); g.addColorStop(0, "rgba(160,220,255,0.7)"); g.addColorStop(1, "rgba(160,220,255,0)");
         ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(-R * 0.3, 0); ctx.lineTo(-R * 0.9, dir * R * 6); ctx.lineTo(R * 0.9, dir * R * 6); ctx.lineTo(R * 0.3, 0); ctx.fill();
       }
       ctx.restore(); ctx.globalCompositeOperation = "source-over";
-    } else if (b.type === "rare") {
+    } else if (b.kind.style === "relic") {
       ctx.save(); ctx.globalCompositeOperation = "lighter";
       ctx.strokeStyle = b.sprite!.tint; ctx.globalAlpha = 0.5 + 0.3 * Math.sin(t * 3); ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(0, 0, R * (1.3 + 0.1 * Math.sin(t * 2)), 0, TAU); ctx.stroke();

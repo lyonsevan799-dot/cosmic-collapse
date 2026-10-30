@@ -1,5 +1,5 @@
 // Procedural, cached object artwork drawn into offscreen canvases.
-import { OBJECTS, type ObjType } from "./data";
+import type { Kind, Style } from "./data";
 
 export interface Sprite { c: HTMLCanvasElement; pad: number; R: number; tint: string; }
 
@@ -15,32 +15,116 @@ export function rng(seed: number) {
 
 const cache = new Map<string, Sprite>();
 export const VARIANTS = 6;
-const PAD: Partial<Record<ObjType, number>> = { gasGiant: 2.4, star: 2.4, neutronStar: 3, rare: 2.1, smallPlanet: 1.35, earthPlanet: 1.35, moon: 1.1 };
+const R0 = 48;
+const PAD: Partial<Record<Style, number>> = { gas: 2.4, star: 2.4, neutron: 3, relic: 2.1, rocky: 1.35, terran: 1.35, moon: 1.1, blackhole: 2.6, system: 1.1, nebula: 1.25, galaxy: 1.15, cluster: 1.15 };
 
-export function getSprite(type: ObjType, variant: number): Sprite {
-  const key = `${type}:${variant}`;
+export function getSprite(kind: Kind, variant: number): Sprite | null {
+  if (kind.style === "dust") return null;
+  const key = `${kind.style}:${kind.hue}:${variant}`;
   const hit = cache.get(key); if (hit) return hit;
-  const R = OBJECTS[type].radius[1];
-  const pad = PAD[type] ?? 1.15;
+  const R = R0;
+  const pad = PAD[kind.style] ?? 1.15;
   const size = Math.ceil(R * 2 * pad);
   const c = document.createElement("canvas"); c.width = c.height = size;
   const ctx = c.getContext("2d")!;
   ctx.translate(size / 2, size / 2);
-  const r = rng(variant * 9973 + type.length * 131 + 7);
+  const r = rng(variant * 9973 + kind.style.length * 131 + kind.hue * 7 + 7);
   let tint = "#ffffff";
-  switch (type) {
-    case "tinyAsteroid": case "largeAsteroid": tint = asteroid(ctx, R, r); break;
+  switch (kind.style) {
+    case "asteroid": tint = asteroid(ctx, R, r); break;
     case "moon": tint = moon(ctx, R, r); break;
-    case "smallPlanet": case "earthPlanet": tint = planet(ctx, R, r, type === "earthPlanet"); break;
-    case "gasGiant": tint = gas(ctx, R, r); break;
+    case "rocky": case "terran": tint = planet(ctx, R, r, kind.style === "terran"); break;
+    case "gas": tint = gas(ctx, R, r); break;
     case "star": tint = star(ctx, R, r); break;
-    case "neutronStar": tint = neutron(ctx, R); break;
-    case "rare": tint = relic(ctx, R, r, variant); break;
+    case "neutron": tint = neutron(ctx, R); break;
+    case "relic": tint = relic(ctx, R, r, variant + kind.idx); break;
+    case "blackhole": tint = rogueHole(ctx, R, r); break;
+    case "system": tint = system(ctx, R, r); break;
+    case "nebula": tint = nebula(ctx, R, r, kind.hue); break;
+    case "galaxy": tint = galaxy(ctx, R, r, kind.hue); break;
+    case "cluster": tint = cluster(ctx, R, r, kind.hue); break;
     default: break;
   }
   const s = { c, pad, R, tint };
   cache.set(key, s);
   return s;
+}
+
+function rogueHole(ctx: CanvasRenderingContext2D, R: number, r: () => number) {
+  const hue = pick(r, [25, 35, 200, 280]);
+  const g = ctx.createRadialGradient(0, 0, R * 0.6, 0, 0, R * 2.5);
+  g.addColorStop(0, `hsla(${hue},95%,60%,0.55)`); g.addColorStop(1, `hsla(${hue},95%,50%,0)`);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, R * 2.5, 0, Math.PI * 2); ctx.fill();
+  ctx.save(); ctx.rotate(-0.3); ctx.scale(1, 0.3);
+  for (let i = 0; i < 4; i++) { ctx.strokeStyle = `hsla(${hue + i * 8},95%,${75 - i * 10}%,${0.8 - i * 0.15})`; ctx.lineWidth = R * 0.18; ctx.beginPath(); ctx.arc(0, 0, R * (1.3 + i * 0.25), 0, Math.PI * 2); ctx.stroke(); }
+  ctx.restore();
+  ctx.fillStyle = "#000"; ctx.beginPath(); ctx.arc(0, 0, R * 0.9, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = `hsla(${hue},100%,85%,0.9)`; ctx.lineWidth = R * 0.06; ctx.beginPath(); ctx.arc(0, 0, R * 0.92, 0, Math.PI * 2); ctx.stroke();
+  return `hsl(${hue},95%,65%)`;
+}
+
+function system(ctx: CanvasRenderingContext2D, R: number, r: () => number) {
+  const sc = pick(r, ["#ffd36b", "#a8d6ff", "#ff9a6b"]);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, R * 0.35);
+  g.addColorStop(0, "#fff"); g.addColorStop(0.4, sc); g.addColorStop(1, sc + "00");
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, R * 0.35, 0, Math.PI * 2); ctx.fill();
+  const n = 4 + Math.floor(r() * 3);
+  for (let i = 0; i < n; i++) {
+    const d = R * (0.3 + (i + 1) * (0.68 / n));
+    ctx.strokeStyle = "rgba(180,200,255,0.22)"; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, d, 0, Math.PI * 2); ctx.stroke();
+    const a = r() * Math.PI * 2, pr = R * (0.03 + r() * 0.05);
+    ctx.fillStyle = `hsl(${Math.floor(r() * 360)},70%,65%)`; ctx.beginPath(); ctx.arc(Math.cos(a) * d, Math.sin(a) * d, pr, 0, Math.PI * 2); ctx.fill();
+  }
+  return sc;
+}
+
+function nebula(ctx: CanvasRenderingContext2D, R: number, r: () => number, hue: number) {
+  ctx.globalCompositeOperation = "lighter";
+  for (let i = 0; i < 26; i++) {
+    const a = r() * Math.PI * 2, d = R * r() * 0.65, br = R * (0.25 + r() * 0.4);
+    const h = hue + (r() - 0.5) * 80;
+    const g = ctx.createRadialGradient(Math.cos(a) * d, Math.sin(a) * d, 0, Math.cos(a) * d, Math.sin(a) * d, br);
+    g.addColorStop(0, `hsla(${h},90%,65%,0.22)`); g.addColorStop(1, `hsla(${h},90%,50%,0)`);
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(Math.cos(a) * d, Math.sin(a) * d, br, 0, Math.PI * 2); ctx.fill();
+  }
+  for (let i = 0; i < 30; i++) { ctx.fillStyle = `rgba(255,255,255,${0.4 + r() * 0.6})`; ctx.beginPath(); ctx.arc((r() - 0.5) * R * 1.6, (r() - 0.5) * R * 1.6, 0.6 + r() * 1.2, 0, Math.PI * 2); ctx.fill(); }
+  ctx.globalCompositeOperation = "source-over";
+  return `hsl(${hue},90%,70%)`;
+}
+
+function galaxy(ctx: CanvasRenderingContext2D, R: number, r: () => number, hue: number) {
+  ctx.globalCompositeOperation = "lighter";
+  const core = ctx.createRadialGradient(0, 0, 0, 0, 0, R * 0.45);
+  core.addColorStop(0, "rgba(255,245,220,0.95)"); core.addColorStop(1, `hsla(${hue},80%,60%,0)`);
+  ctx.fillStyle = core; ctx.beginPath(); ctx.arc(0, 0, R * 0.45, 0, Math.PI * 2); ctx.fill();
+  const arms = 2 + Math.floor(r() * 3);
+  for (let i = 0; i < 420; i++) {
+    const t = r(); const arm = i % arms;
+    const ang = t * 4.2 + (arm / arms) * Math.PI * 2 + (r() - 0.5) * 0.5;
+    const d = R * (0.08 + t * 0.9);
+    const h = hue + (r() < 0.3 ? 180 : 0) + (r() - 0.5) * 30;
+    ctx.fillStyle = `hsla(${h},85%,${65 + r() * 25}%,${0.25 + (1 - t) * 0.5})`;
+    ctx.beginPath(); ctx.arc(Math.cos(ang) * d, Math.sin(ang) * d, 0.5 + r() * 1.6 * (1 - t * 0.5), 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalCompositeOperation = "source-over";
+  return `hsl(${hue},85%,72%)`;
+}
+
+function cluster(ctx: CanvasRenderingContext2D, R: number, r: () => number, hue: number) {
+  ctx.globalCompositeOperation = "lighter";
+  const halo = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
+  halo.addColorStop(0, `hsla(${hue},70%,60%,0.25)`); halo.addColorStop(1, `hsla(${hue},70%,50%,0)`);
+  ctx.fillStyle = halo; ctx.beginPath(); ctx.arc(0, 0, R, 0, Math.PI * 2); ctx.fill();
+  for (let i = 0; i < 22; i++) {
+    const a = r() * Math.PI * 2, d = R * Math.sqrt(r()) * 0.85, gr = R * (0.04 + r() * 0.1);
+    const x = Math.cos(a) * d, y = Math.sin(a) * d;
+    ctx.save(); ctx.translate(x, y); ctx.rotate(r() * 3); ctx.scale(1, 0.4 + r() * 0.5);
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, gr);
+    g.addColorStop(0, "rgba(255,250,235,0.95)"); g.addColorStop(1, `hsla(${hue + (r() - 0.5) * 90},80%,65%,0)`);
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, gr, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+  }
+  ctx.globalCompositeOperation = "source-over";
+  return `hsl(${hue},80%,72%)`;
 }
 
 const pick = <T,>(r: () => number, a: T[]) => a[Math.floor(r() * a.length)];
