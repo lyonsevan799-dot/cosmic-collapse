@@ -1,25 +1,24 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Engine, type HudState } from "@/game/engine";
-import { LEVELS, OBJECTS, SKINS, UPGRADES, type UpgradeId } from "@/game/data";
+import { ACHIEVEMENTS, CATALOG_SIZE, PLAYER, SKINS, kindAt } from "@/game/data";
 import {
-  claimMilestone, completeLevel, defaultSave, isLevelPlayable, loadSave, purchaseSkin, purchaseUpgrade,
-  storageAvailable, upgradeCost, writeSave, type LevelResult, type RunStats, type SaveData,
+  defaultSave, formatMass, loadSave, nextAchievement, recordAbsorb, skinOwned, storageAvailable,
+  unlockAchievements, writeSave, type SaveData,
 } from "@/game/logic";
 import { sfx } from "@/game/audio";
 import { drawBlackHole } from "@/game/blackhole";
 
-type Screen = "menu" | "levels" | "play" | "shop" | "hangar" | "settings" | "complete" | "gameComplete";
+type Screen = "menu" | "play" | "achievements" | "stats" | "hangar" | "settings";
 interface Confirm { title: string; body: string; yes: string; onYes: () => void; }
 
 const TUTORIAL = [
   "Move with WASD or the arrow keys.",
   "Look for objects small enough to absorb — they glow with a ring.",
   "Nearby objects are pulled toward your event horizon.",
-  "Every absorption increases your mass.",
-  "Reach the target mass to complete the sector.",
+  "Every absorption adds mass. Locked objects show a padlock.",
+  "Grow forever — bigger objects appear as you grow.",
 ];
-const fmtTime = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
-const fmt = (n: number) => n.toLocaleString("en-US");
+const fmtTime = (s: number) => { const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return `${h ? h + "h " : ""}${m}m ${Math.floor(s % 60)}s`; };
 
 export default function CosmicCollapse() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -32,22 +31,28 @@ export default function CosmicCollapse() {
   const pausedRef = useRef(paused); pausedRef.current = paused;
   const [settingsFrom, setSettingsFrom] = useState<"menu" | "pause">("menu");
   const [confirm, setConfirm] = useState<Confirm | null>(null);
-  const [hud, setHud] = useState<HudState>({ mass: 0, target: 1, time: 0, levelIndex: 0 });
-  const [toasts, setToasts] = useState<{ id: number; msg: string; gem?: boolean }[]>([]);
-  const [result, setResult] = useState<(LevelResult & { stats: RunStats; index: number }) | null>(null);
+  const [hud, setHud] = useState<HudState>({ mass: 0, time: 0 });
+  const [toasts, setToasts] = useState<{ id: number; msg: string; ach?: boolean }[]>([]);
   const [tut, setTut] = useState<number | null>(null);
   const tutRef = useRef<{ step: number | null; since: number; flags: Set<string> }>({ step: null, since: 0, flags: new Set() });
-  const levelRef = useRef(0);
   const toastId = useRef(0);
+  const lastTime = useRef(0);
+  const dirty = useRef(false);
 
-  const commit = useCallback((s: SaveData) => { saveRef.current = s; setSave(s); writeSave(s); }, []);
-  const toast = useCallback((msg: string, gem = false) => {
+  const commit = useCallback((s: SaveData) => { saveRef.current = s; setSave(s); writeSave(s); dirty.current = false; }, []);
+  const toast = useCallback((msg: string, ach = false) => {
     const id = ++toastId.current;
-    setToasts((t) => [...t.slice(-2), { id, msg, gem }]);
+    setToasts((t) => [...t.slice(-2), { id, msg, ach }]);
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2800);
   }, []);
+  /** Persist run mass + play time from the engine. */
+  const flush = useCallback(() => {
+    const e = engineRef.current; if (!e || e.mode !== "play") return;
+    const dtp = Math.max(0, e.runTime - lastTime.current); lastTime.current = e.runTime;
+    const s = saveRef.current;
+    commit({ ...s, runMass: e.player.mass, bestMass: Math.max(s.bestMass, e.player.mass), stats: { ...s.stats, playTime: s.stats.playTime + dtp } });
+  }, [commit]);
 
-  // engine lifecycle
   useEffect(() => {
     const e = new Engine(canvasRef.current!, {
       onHud: setHud,
@@ -55,18 +60,17 @@ export default function CosmicCollapse() {
       onBlur: () => doPause(),
       onToast: (m) => toast(m),
       onTutorial: (ev) => { tutRef.current.flags.add(ev); },
-      onMass: (m) => {
-        let s = saveRef.current; let r;
-        while ((r = claimMilestone(s, m))) { s = r.save; toast(`Mass milestone ${fmt(r.milestone)} · +${r.gems} gems`, true); sfx.milestone(); }
-        if (s !== saveRef.current) commit(s);
-      },
-      onComplete: (stats) => {
-        const idx = levelRef.current;
-        const res = completeLevel(saveRef.current, idx, stats);
-        commit(res.save);
-        setResult({ ...res, stats, index: idx });
-        sfx.gem();
-        setScreen("complete");
+      onAbsorb: (kind, _gain, mass) => {
+        let s = { ...saveRef.current, stats: recordAbsorb(saveRef.current.stats, kind) };
+        const r = unlockAchievements(s, mass); s = r.save;
+        saveRef.current = s; dirty.current = true;
+        if (r.unlocked.length) {
+          for (const a of r.unlocked) {
+            toast(`Achievement unlocked · ${a.icon} ${a.name}`, true);
+            const sk = SKINS.find((k) => k.achievement === a.id); if (sk) toast(`New skin: ${sk.name}`);
+          }
+          sfx.complete(); commit(s);
+        }
       },
     });
     engineRef.current = e;
@@ -74,16 +78,18 @@ export default function CosmicCollapse() {
     const unlock = () => sfx.unlock();
     window.addEventListener("pointerdown", unlock);
     window.addEventListener("keydown", unlock);
-    return () => { e.destroy(); window.removeEventListener("pointerdown", unlock); window.removeEventListener("keydown", unlock); };
+    const iv = setInterval(() => { if (screenRef.current === "play") flush(); else if (dirty.current) commit(saveRef.current); }, 3000);
+    const unload = () => flush();
+    window.addEventListener("beforeunload", unload);
+    return () => { clearInterval(iv); e.destroy(); window.removeEventListener("pointerdown", unlock); window.removeEventListener("keydown", unlock); window.removeEventListener("beforeunload", unload); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    engineRef.current?.setConfig({ upgrades: save.upgrades, skin: save.skin, settings: save.settings });
+    engineRef.current?.setConfig({ skin: save.skin, settings: save.settings });
     sfx.set(save.settings);
   }, [save]);
 
-  // tutorial driver
   useEffect(() => {
     const id = setInterval(() => {
       const T = tutRef.current; if (T.step === null || pausedRef.current) return;
@@ -98,95 +104,122 @@ export default function CosmicCollapse() {
     tutRef.current.step = s; tutRef.current.since = performance.now(); setTut(s);
     if (engineRef.current) engineRef.current.highlight = s === 1;
   };
-  const advanceTut = () => {
-    const s = tutRef.current.step; if (s === null) return;
-    if (s >= TUTORIAL.length - 1) { endTut(); return; }
-    setTutStep(s + 1);
-  };
+  const advanceTut = () => { const s = tutRef.current.step; if (s === null) return; if (s >= TUTORIAL.length - 1) { endTut(); return; } setTutStep(s + 1); };
   const endTut = () => { setTutStep(null); if (!saveRef.current.tutorialDone) commit({ ...saveRef.current, tutorialDone: true }); };
 
   const click = () => sfx.click();
-  const doPause = () => { if (screenRef.current !== "play") return; engineRef.current?.pause(); setPaused(true); };
+  const doPause = () => { if (screenRef.current !== "play") return; engineRef.current?.pause(); flush(); setPaused(true); };
   const doResume = () => { engineRef.current?.resume(); setPaused(false); };
 
-  const startLevel = (i: number) => {
-    if (!isLevelPlayable(saveRef.current, i)) { sfx.error(); return; }
-    levelRef.current = i; setResult(null); setPaused(false); setConfirm(null);
-    engineRef.current?.startLevel(i);
+  const startRun = (mass: number) => {
+    setPaused(false); setConfirm(null);
+    engineRef.current?.startRun(mass); lastTime.current = 0;
+    commit({ ...saveRef.current, runMass: Math.max(PLAYER.startMass, mass) });
     tutRef.current.flags = new Set();
-    setTutStep(i === 0 && !saveRef.current.tutorialDone ? 0 : null);
+    setTutStep(!saveRef.current.tutorialDone ? 0 : null);
     setScreen("play");
   };
-  const toMenu = () => { engineRef.current?.startDemo(); setPaused(false); setTutStep(null); setConfirm(null); setScreen("menu"); };
-
-  const restart = () => {
-    const lvl = LEVELS[levelRef.current];
-    if (hud.mass > lvl.startMass + 5) {
-      setConfirm({ title: "Restart level?", body: "Your current mass in this level will be lost. Upgrades, gems and unlocks are kept.", yes: "Restart", onYes: () => startLevel(levelRef.current) });
-    } else startLevel(levelRef.current);
+  const toMenu = () => { flush(); engineRef.current?.startDemo(); setPaused(false); setTutStep(null); setConfirm(null); setScreen("menu"); };
+  const newGame = () => {
+    if (saveRef.current.runMass > PLAYER.startMass + 5) setConfirm({ title: "Start a new black hole?", body: "Your current run's mass resets to 10. Personal best, achievements and stats are kept.", yes: "Start over", onYes: () => startRun(PLAYER.startMass) });
+    else startRun(PLAYER.startMass);
   };
 
   const coarse = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
-  const lvl = LEVELS[screen === "play" || screen === "complete" ? levelRef.current : 0];
-  const progress = Math.min(1, Math.max(0, (hud.mass - lvl.startMass) / (hud.target - lvl.startMass)));
-  const hasProgress = save.highestUnlocked > 0 || save.completed.length > 0;
+  const next = nextAchievement(save, hud.mass);
+  const best = Math.max(save.bestMass, hud.mass);
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-background text-foreground" style={{ touchAction: "none" }}>
       <canvas ref={canvasRef} className="absolute inset-0 block" aria-label="Game view" />
 
-      {/* toasts */}
-      <div className="pointer-events-none absolute left-1/2 top-24 z-40 flex -translate-x-1/2 flex-col items-center gap-2 px-4">
+      <div className="pointer-events-none absolute left-1/2 top-28 z-40 flex -translate-x-1/2 flex-col items-center gap-2 px-4">
         {toasts.map((t) => (
-          <div key={t.id} className="cc-toast cc-panel px-4 py-2 text-center text-sm font-semibold">
-            {t.gem && <span className="cc-gem">◆ </span>}{t.msg}
-          </div>
+          <div key={t.id} className={`cc-toast cc-panel px-4 py-2 text-center text-sm font-semibold ${t.ach ? "cc-highlight text-gold" : ""}`}>{t.msg}</div>
         ))}
       </div>
 
       {screen === "menu" && (
-        <MainMenu
-          gems={save.gems} hasProgress={hasProgress} continueLevel={save.highestUnlocked}
-          onPlay={() => { click(); startLevel(0); }}
-          onContinue={() => { click(); startLevel(save.highestUnlocked); }}
-          onNav={(s) => { click(); if (s === "settings") setSettingsFrom("menu"); setScreen(s); }}
-        />
+        <div className="cc-screen absolute inset-0 z-20 flex flex-col items-center justify-between p-6 sm:p-10">
+          <div className="flex w-full justify-end"><span className="cc-chip">Best {formatMass(save.bestMass)} mass</span></div>
+          <div className="text-center">
+            <h1 className="cc-title text-5xl leading-none sm:text-7xl md:text-8xl">COSMIC<br />COLLAPSE</h1>
+            <p className="mt-3 text-sm text-muted-foreground sm:text-base">Begin as a speck. Never stop growing.</p>
+          </div>
+          <div className="flex w-full max-w-md flex-col gap-2">
+            {save.runMass > PLAYER.startMass && <button className="cc-btn cc-btn-primary py-4 text-base" onClick={() => { click(); startRun(saveRef.current.runMass); }}>Continue · {formatMass(save.runMass)} mass</button>}
+            <button className={`cc-btn py-4 text-base ${save.runMass > PLAYER.startMass ? "" : "cc-btn-primary"}`} onClick={() => { click(); newGame(); }}>{save.runMass > PLAYER.startMass ? "New Game" : "Play"}</button>
+            <div className="grid grid-cols-2 gap-2">
+              <button className="cc-btn" onClick={() => { click(); setScreen("achievements"); }}>Achievements</button>
+              <button className="cc-btn" onClick={() => { click(); setScreen("stats"); }}>Statistics</button>
+              <button className="cc-btn" onClick={() => { click(); setScreen("hangar"); }}>Skins</button>
+              <button className="cc-btn" onClick={() => { click(); setSettingsFrom("menu"); setScreen("settings"); }}>Settings</button>
+            </div>
+            <p className="mt-2 text-center text-xs text-muted-foreground">WASD / arrows to move · Esc to pause · touch joystick on mobile</p>
+          </div>
+        </div>
       )}
 
-      {screen === "levels" && <LevelSelect save={save} onBack={() => { click(); setScreen("menu"); }} onPlay={(i) => { click(); startLevel(i); }} />}
-      {screen === "shop" && <Shop save={save} onBack={() => { click(); setScreen("menu"); }} onBuy={(id) => {
-        const n = purchaseUpgrade(saveRef.current, id);
-        if (n) { commit(n); sfx.purchase(); } else sfx.error();
-      }} />}
+      {screen === "achievements" && (
+        <Page title="Achievements" onBack={() => { click(); setScreen("menu"); }}>
+          <p className="mb-4 text-center text-sm text-muted-foreground">{save.achievements.length} / {ACHIEVEMENTS.length} unlocked</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {ACHIEVEMENTS.map((a) => {
+              const got = save.achievements.includes(a.id);
+              return (
+                <div key={a.id} className={`cc-panel flex items-center gap-4 p-4 ${got ? "" : "opacity-50"}`}>
+                  <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full border text-2xl ${got ? "border-primary text-gold" : "border-border grayscale"}`}>{got ? a.icon : "🔒"}</div>
+                  <div className="text-left">
+                    <div className="font-display">{a.name}</div>
+                    <div className="text-xs text-muted-foreground">{a.desc}</div>
+                    <div className="text-[11px] text-muted-foreground">{got ? "✓ Unlocked" : a.id === "first" ? "Locked" : `Requires ${formatMass(a.mass)} mass`}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </Page>
+      )}
+
+      {screen === "stats" && (
+        <Page title="Statistics" onBack={() => { click(); setScreen("menu"); }}>
+          <div className="mx-auto grid max-w-lg grid-cols-2 gap-2">
+            <Stat label="Current run mass" value={formatMass(save.runMass)} />
+            <Stat label="Highest mass" value={formatMass(save.bestMass)} />
+            <Stat label="Objects absorbed" value={formatMass(save.stats.absorbed)} />
+            <Stat label="Planets absorbed" value={formatMass(save.stats.planets)} />
+            <Stat label="Stars absorbed" value={formatMass(save.stats.stars)} />
+            <Stat label="Galaxies absorbed" value={formatMass(save.stats.galaxies)} />
+            <Stat label="Play time" value={fmtTime(save.stats.playTime)} />
+            <Stat label="Achievements" value={`${save.achievements.length}/${ACHIEVEMENTS.length}`} />
+          </div>
+        </Page>
+      )}
+
       {screen === "hangar" && <Hangar save={save} onBack={() => { click(); setScreen("menu"); }}
-        onBuy={(id) => { const n = purchaseSkin(saveRef.current, id); if (n) { commit(n); sfx.purchase(); } else sfx.error(); }}
-        onEquip={(id) => { if (saveRef.current.skinsOwned.includes(id)) { commit({ ...saveRef.current, skin: id }); click(); } }} />}
+        onEquip={(id) => { if (skinOwned(saveRef.current, id)) { commit({ ...saveRef.current, skin: id }); click(); } }} />}
       {screen === "settings" && (
         <SettingsScreen save={save} onChange={(st) => commit({ ...saveRef.current, settings: st })}
           onBack={() => { click(); setScreen(settingsFrom === "pause" ? "play" : "menu"); }}
-          onReset={() => setConfirm({ title: "Reset all progress?", body: "This deletes your levels, gems, upgrades and skins. This cannot be undone.", yes: "Reset everything", onYes: () => { const d = defaultSave(); d.settings = saveRef.current.settings; commit(d); toast("Progress reset"); } })} />
+          onReset={() => setConfirm({ title: "Reset all progress?", body: "This deletes your best mass, achievements, stats and skins. This cannot be undone.", yes: "Reset everything", onYes: () => { const d = defaultSave(); d.settings = saveRef.current.settings; commit(d); toast("Progress reset"); } })} />
       )}
 
       {screen === "play" && (
         <>
           <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex flex-wrap items-start justify-between gap-2 p-3 sm:p-4">
-            <div className="cc-panel pointer-events-auto px-3 py-2">
-              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Sector {lvl.sector} · {lvl.sectorName}</div>
-              <div className="font-display text-sm font-semibold sm:text-base">{lvl.id}. {lvl.name}</div>
+            <div className="cc-panel px-4 py-2">
+              <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Mass</div>
+              <div className="font-display text-2xl text-primary sm:text-3xl">{formatMass(hud.mass)}</div>
+              <div className="text-[11px] text-muted-foreground">Best {formatMass(best)}</div>
             </div>
-            <div className={`cc-panel order-3 w-full px-3 py-2 sm:order-none sm:w-auto sm:min-w-[320px] ${tut === 4 ? "cc-highlight" : ""}`}>
-              <div className="mb-1 flex items-baseline justify-between gap-4 text-xs">
-                <span className="text-muted-foreground">Mass</span>
-                <span className="font-display text-sm"><span className="text-primary">{fmt(hud.mass)}</span> <span className="text-muted-foreground">/ {fmt(hud.target)}</span></span>
-              </div>
-              <div className="cc-progress-track"><div className="cc-progress-fill" style={{ width: `${progress * 100}%` }} /></div>
-              <div className="mt-1 flex justify-between text-[10px] text-muted-foreground"><span>{fmtTime(hud.time)}</span>{progress >= 0.85 && progress < 1 && <span className="text-accent">Almost there!</span>}</div>
+            <div className="cc-panel order-3 w-full px-3 py-2 sm:order-none sm:w-auto sm:min-w-[300px]">
+              {next ? (<>
+                <div className="mb-1 flex justify-between gap-4 text-xs"><span className="text-muted-foreground">Next: {next.achievement.icon} {next.achievement.name}</span><span>{formatMass(next.achievement.mass)}</span></div>
+                <div className="cc-progress-track"><div className="cc-progress-fill" style={{ width: `${next.progress * 100}%` }} /></div>
+              </>) : <div className="text-xs text-gold">All achievements unlocked — keep growing!</div>}
             </div>
             <div className="pointer-events-auto flex items-center gap-2">
-              <span className="cc-chip"><span className="cc-gem">◆</span>{fmt(save.gems)}</span>
-              <button className="cc-btn cc-icon-btn" aria-label={save.settings.audio ? "Mute sound" : "Unmute sound"} onClick={() => commit({ ...saveRef.current, settings: { ...saveRef.current.settings, audio: !saveRef.current.settings.audio } })}>
-                {save.settings.audio ? "♪" : "✕"}
-              </button>
+              <button className="cc-btn cc-icon-btn" aria-label={save.settings.audio ? "Mute sound" : "Unmute sound"} onClick={() => commit({ ...saveRef.current, settings: { ...saveRef.current.settings, audio: !saveRef.current.settings.audio } })}>{save.settings.audio ? "♪" : "✕"}</button>
               <button className="cc-btn cc-icon-btn" aria-label="Pause" onClick={() => { click(); doPause(); }}>❚❚</button>
             </div>
           </div>
@@ -206,60 +239,16 @@ export default function CosmicCollapse() {
           {paused && !confirm && (
             <Overlay>
               <h2 className="cc-title mb-1 text-3xl">Paused</h2>
-              <p className="mb-6 text-sm text-muted-foreground">{lvl.name} · {fmt(hud.mass)} mass</p>
+              <p className="mb-6 text-sm text-muted-foreground">{formatMass(hud.mass)} mass · best {formatMass(best)}</p>
               <div className="flex w-full flex-col gap-2">
                 <button className="cc-btn cc-btn-primary" onClick={() => { click(); doResume(); }} autoFocus>Resume</button>
-                <button className="cc-btn" onClick={() => { click(); restart(); }}>Restart Level</button>
+                <button className="cc-btn" onClick={() => { click(); setConfirm({ title: "Restart from 10 mass?", body: "Your current mass resets. Personal best, achievements and stats are kept.", yes: "Restart", onYes: () => startRun(PLAYER.startMass) }); }}>Restart</button>
                 <button className="cc-btn" onClick={() => { click(); setSettingsFrom("pause"); setScreen("settings"); }}>Settings</button>
-                <button className="cc-btn cc-btn-ghost" onClick={() => { click(); setConfirm({ title: "Return to main menu?", body: "Progress in this level will be lost.", yes: "Main Menu", onYes: toMenu }); }}>Main Menu</button>
+                <button className="cc-btn cc-btn-ghost" onClick={() => { click(); toMenu(); }}>Save &amp; Main Menu</button>
               </div>
             </Overlay>
           )}
         </>
-      )}
-
-      {screen === "complete" && result && (
-        <Overlay wide>
-          <div className="text-xs uppercase tracking-widest text-primary">Sector {LEVELS[result.index].sector} · Level {result.index + 1} complete</div>
-          <h2 className="cc-title mb-4 mt-1 text-3xl sm:text-4xl">{LEVELS[result.index].name}</h2>
-          <div className="mb-4 grid w-full grid-cols-2 gap-2">
-            <Stat label="Final mass" value={fmt(result.stats.mass)} />
-            <Stat label="Time" value={fmtTime(result.stats.time)} />
-          </div>
-          <div className="mb-3 w-full space-y-1 text-left text-sm">
-            {result.objectivesDone.map((o) => (
-              <div key={o.label} className="flex items-center gap-2">
-                <span className={o.done ? "text-success" : "text-muted-foreground"}>{o.done ? "✓" : "○"}</span>
-                <span className={o.done ? "" : "text-muted-foreground"}>{o.label}</span>
-                {o.done && !o.isNew && <span className="text-xs text-muted-foreground">(already claimed)</span>}
-              </div>
-            ))}
-          </div>
-          <div className="mb-5 w-full rounded-xl border border-border p-3 text-sm">
-            {result.lines.map((l) => <div key={l.label} className="flex justify-between"><span>{l.label}</span><span className="cc-gem">+{l.gems} ◆</span></div>)}
-            <div className="mt-2 flex justify-between border-t border-border pt-2 font-semibold"><span>Cosmic Gems earned</span><span className="cc-gem">+{result.total} ◆</span></div>
-          </div>
-          <div className="flex w-full flex-col gap-2 sm:flex-row">
-            <button className="cc-btn cc-btn-primary flex-1" autoFocus onClick={() => { click(); if (result.index >= LEVELS.length - 1) setScreen("gameComplete"); else startLevel(result.index + 1); }}>
-              {result.index >= LEVELS.length - 1 ? "Continue" : "Next Level"}
-            </button>
-            <button className="cc-btn flex-1" onClick={() => { click(); startLevel(result.index); }}>Replay</button>
-            <button className="cc-btn cc-btn-ghost flex-1" onClick={() => { click(); toMenu(); }}>Main Menu</button>
-          </div>
-        </Overlay>
-      )}
-
-      {screen === "gameComplete" && (
-        <Overlay wide>
-          <div className="text-xs uppercase tracking-widest text-gold">Campaign complete</div>
-          <h2 className="cc-title my-2 text-4xl">Singularity Achieved</h2>
-          <p className="mb-4 text-sm text-muted-foreground">You consumed the heart of the galaxy. The <b className="text-foreground">Galactic Crown</b> skin is now yours in the Hangar.</p>
-          <div className="flex w-full flex-col gap-2 sm:flex-row">
-            <button className="cc-btn cc-btn-primary flex-1" onClick={() => { click(); engineRef.current?.startDemo(); setScreen("hangar"); }}>Open Hangar</button>
-            <button className="cc-btn flex-1" onClick={() => { click(); engineRef.current?.startDemo(); setScreen("levels"); }}>Level Select</button>
-            <button className="cc-btn cc-btn-ghost flex-1" onClick={() => { click(); toMenu(); }}>Main Menu</button>
-          </div>
-        </Overlay>
       )}
 
       {confirm && (
@@ -286,102 +275,18 @@ function Overlay({ children, wide, z = "z-30" }: { children: ReactNode; wide?: b
 function Stat({ label, value }: { label: string; value: string }) {
   return <div className="rounded-xl border border-border p-3"><div className="text-[10px] uppercase tracking-widest text-muted-foreground">{label}</div><div className="font-display text-xl">{value}</div></div>;
 }
-function Page({ title, onBack, gems, children }: { title: string; onBack: () => void; gems?: number; children: ReactNode }) {
+function Page({ title, onBack, children }: { title: string; onBack: () => void; children: ReactNode }) {
   return (
     <div className="absolute inset-0 z-20 overflow-y-auto bg-background/70" style={{ touchAction: "pan-y" }}>
       <div className="cc-screen mx-auto max-w-5xl p-4 sm:p-8">
         <div className="mb-6 flex items-center justify-between gap-3">
           <button className="cc-btn" onClick={onBack}>← Back</button>
           <h2 className="cc-title text-2xl sm:text-3xl">{title}</h2>
-          {gems !== undefined ? <span className="cc-chip"><span className="cc-gem">◆</span>{fmt(gems)}</span> : <span className="w-16" />}
+          <span className="w-16" />
         </div>
         {children}
       </div>
     </div>
-  );
-}
-
-function MainMenu({ gems, hasProgress, continueLevel, onPlay, onContinue, onNav }: { gems: number; hasProgress: boolean; continueLevel: number; onPlay: () => void; onContinue: () => void; onNav: (s: Screen) => void }) {
-  return (
-    <div className="cc-screen absolute inset-0 z-20 flex flex-col items-center justify-between p-6 sm:p-10">
-      <div className="flex w-full justify-end"><span className="cc-chip"><span className="cc-gem">◆</span>{fmt(gems)} Cosmic Gems</span></div>
-      <div className="text-center">
-        <h1 className="cc-title text-5xl leading-none sm:text-7xl md:text-8xl">COSMIC<br />COLLAPSE</h1>
-        <p className="mt-3 text-sm text-muted-foreground sm:text-base">Begin as a speck. End as a singularity.</p>
-      </div>
-      <div className="flex w-full max-w-md flex-col gap-2">
-        {hasProgress && <button className="cc-btn cc-btn-primary py-4 text-base" onClick={onContinue}>Continue · Level {continueLevel + 1}</button>}
-        <button className={`cc-btn py-4 text-base ${hasProgress ? "" : "cc-btn-primary"}`} onClick={onPlay}>Play Campaign</button>
-        <div className="grid grid-cols-2 gap-2">
-          <button className="cc-btn" onClick={() => onNav("levels")}>Level Select</button>
-          <button className="cc-btn" onClick={() => onNav("shop")}>Upgrades</button>
-          <button className="cc-btn" onClick={() => onNav("hangar")}>Hangar</button>
-          <button className="cc-btn" onClick={() => onNav("settings")}>Settings</button>
-        </div>
-        <p className="mt-2 text-center text-xs text-muted-foreground">WASD / arrows to move · Esc to pause · touch joystick on mobile</p>
-      </div>
-    </div>
-  );
-}
-
-function LevelSelect({ save, onBack, onPlay }: { save: SaveData; onBack: () => void; onPlay: (i: number) => void }) {
-  const sectors = [1, 2, 3, 4, 5];
-  return (
-    <Page title="Campaign" onBack={onBack} gems={save.gems}>
-      <div className="space-y-6">
-        {sectors.map((s) => (
-          <div key={s}>
-            <div className="mb-2 text-xs uppercase tracking-widest text-muted-foreground">Sector {s} · {LEVELS.find((l) => l.sector === s)!.sectorName}</div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              {LEVELS.map((l, i) => ({ l, i })).filter(({ l }) => l.sector === s).map(({ l, i }) => {
-                const unlocked = isLevelPlayable(save, i); const done = save.completed.includes(i); const best = save.bestTimes[String(i)];
-                return (
-                  <button key={l.id} disabled={!unlocked} onClick={() => unlocked && onPlay(i)} aria-label={`${l.name}${unlocked ? "" : " (locked)"}`}
-                    className="cc-panel cc-btn flex-col items-start gap-1 p-4 text-left">
-                    <div className="flex w-full items-center justify-between">
-                      <span className="font-display text-xs text-primary">LEVEL {l.id}</span>
-                      <span className="text-xs">{!unlocked ? "🔒 Locked" : done ? <span className="text-success">✓ Complete</span> : <span className="text-accent">● New</span>}</span>
-                    </div>
-                    <div className="font-display text-lg">{l.name}</div>
-                    <div className="text-xs font-normal text-muted-foreground">{l.theme}</div>
-                    <div className="mt-1 flex w-full justify-between text-xs font-normal text-muted-foreground">
-                      <span>Target {fmt(l.target)} mass</span>
-                      <span>{best ? `Best ${fmtTime(best)}` : `◆ ${l.reward}`}</span>
-                    </div>
-                    <div className="text-[11px] font-normal text-muted-foreground">Objectives {l.objectives.filter((o) => save.objectives.includes(o.id)).length}/{l.objectives.length}</div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-    </Page>
-  );
-}
-
-function Shop({ save, onBack, onBuy }: { save: SaveData; onBack: () => void; onBuy: (id: UpgradeId) => void }) {
-  const eff = (id: UpgradeId, tier: number) => { const u = UPGRADES.find((x) => x.id === id)!; return `+${Math.round(u.per * tier * 100)}%`; };
-  return (
-    <Page title="Upgrades" onBack={onBack} gems={save.gems}>
-      <div className="grid gap-4 sm:grid-cols-2">
-        {UPGRADES.map((u) => {
-          const tier = save.upgrades[u.id]; const cost = upgradeCost(save, u.id); const maxed = cost === null;
-          return (
-            <div key={u.id} className="cc-panel p-5">
-              <div className="flex items-center justify-between"><h3 className="font-display text-lg">{u.name}</h3><span className="text-xs text-muted-foreground">Level {tier}/{u.costs.length}</span></div>
-              <p className="mt-1 text-sm text-muted-foreground">{u.desc}</p>
-              <div className="my-3 flex gap-1">{u.costs.map((_, i) => <div key={i} className={`h-1.5 flex-1 rounded-full ${i < tier ? "bg-primary" : "bg-muted"}`} />)}</div>
-              <div className="mb-3 text-sm">Current <b>{eff(u.id, tier)}</b>{!maxed && <> → Next <b className="text-primary">{eff(u.id, tier + 1)}</b></>}</div>
-              <button className={`cc-btn w-full ${maxed ? "" : "cc-btn-primary"}`} disabled={maxed || save.gems < (cost ?? 0)} onClick={() => onBuy(u.id)}>
-                {maxed ? "Maxed out" : <>Buy · <span>◆ {cost}</span></>}
-              </button>
-            </div>
-          );
-        })}
-      </div>
-      <p className="mt-6 text-center text-xs text-muted-foreground">Earn Cosmic Gems by clearing levels, completing objectives, reaching mass milestones and absorbing Void Relics.</p>
-    </Page>
   );
 }
 
@@ -403,31 +308,28 @@ function SkinPreview({ skinId, size }: { skinId: string; size: number }) {
   return <canvas ref={ref} style={{ width: size, height: size }} aria-label="Skin preview" />;
 }
 
-function Hangar({ save, onBack, onBuy, onEquip }: { save: SaveData; onBack: () => void; onBuy: (id: string) => void; onEquip: (id: string) => void }) {
+function Hangar({ save, onBack, onEquip }: { save: SaveData; onBack: () => void; onEquip: (id: string) => void }) {
   const [sel, setSel] = useState(save.skin);
   const skin = SKINS.find((s) => s.id === sel)!;
-  const owned = save.skinsOwned.includes(sel); const equipped = save.skin === sel;
+  const owned = skinOwned(save, sel); const equipped = save.skin === sel;
+  const ach = ACHIEVEMENTS.find((a) => a.id === skin.achievement);
   return (
-    <Page title="Hangar" onBack={onBack} gems={save.gems}>
+    <Page title="Skins" onBack={onBack}>
       <div className="grid gap-6 md:grid-cols-[1fr_1.2fr]">
         <div className="cc-panel flex flex-col items-center p-4">
           <SkinPreview skinId={sel} size={280} />
           <h3 className="font-display text-xl">{skin.name}</h3>
-          <p className="mb-3 text-xs text-muted-foreground">{equipped ? "Equipped" : owned ? "Unlocked" : skin.unlock === "campaign" ? "Unlock by completing the campaign" : `Locked · ◆ ${skin.price}`}</p>
-          {owned ? (
-            <button className="cc-btn cc-btn-primary w-full" disabled={equipped} onClick={() => onEquip(sel)}>{equipped ? "Equipped" : "Equip"}</button>
-          ) : skin.unlock === "gems" ? (
-            <button className="cc-btn cc-btn-accent w-full" disabled={save.gems < skin.price} onClick={() => onBuy(sel)}>Buy · ◆ {skin.price}</button>
-          ) : <button className="cc-btn w-full" disabled>Campaign reward</button>}
+          <p className="mb-3 text-xs text-muted-foreground">{equipped ? "Equipped" : owned ? "Unlocked" : `Unlock with achievement: ${ach?.name}`}</p>
+          <button className="cc-btn cc-btn-primary w-full" disabled={!owned || equipped} onClick={() => onEquip(sel)}>{equipped ? "Equipped" : owned ? "Equip" : "Locked"}</button>
         </div>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-2 gap-3">
           {SKINS.map((s) => {
-            const o = save.skinsOwned.includes(s.id);
+            const o = skinOwned(save, s.id);
             return (
               <button key={s.id} onClick={() => setSel(s.id)} className={`cc-panel cc-btn flex-col items-start gap-2 p-3 text-left ${sel === s.id ? "border-primary" : ""}`}>
                 <div className="h-6 w-full rounded-md" style={{ background: `linear-gradient(90deg, ${s.hot}, ${s.mid}, ${s.outer})` }} />
                 <span className="text-sm">{s.name}</span>
-                <span className="text-xs font-normal text-muted-foreground">{save.skin === s.id ? "★ Equipped" : o ? "✓ Owned" : s.unlock === "campaign" ? "🔒 Campaign" : `🔒 ◆ ${s.price}`}</span>
+                <span className="text-xs font-normal text-muted-foreground">{save.skin === s.id ? "★ Equipped" : o ? "✓ Owned" : "🔒 Achievement"}</span>
               </button>
             );
           })}
@@ -467,7 +369,7 @@ function SettingsScreen({ save, onChange, onBack, onReset }: { save: SaveData; o
       <p className="mt-4 text-center text-xs text-muted-foreground">Progress is saved in this browser only. No account needed.</p>
       <div className="mx-auto mt-4 max-w-lg text-xs text-muted-foreground">
         <div className="mb-1 font-semibold text-foreground">Absorption guide</div>
-        {Object.values(OBJECTS).map((o) => <div key={o.type} className="flex justify-between"><span>{o.name}</span><span>needs {fmt(o.minMass)} mass</span></div>)}
+        {Array.from({ length: CATALOG_SIZE + 3 }, (_, i) => kindAt(i)).map((o) => <div key={o.idx} className="flex justify-between"><span>{o.name}</span><span>needs {formatMass(o.minMass)} mass</span></div>)}
       </div>
     </Page>
   );
