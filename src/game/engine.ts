@@ -4,12 +4,18 @@ import { addMass, canAbsorb, formatMass, radiusForMass, type Settings } from "./
 import { getSprite, rng, VARIANTS, type Sprite } from "./sprites";
 import { drawBlackHole } from "./blackhole";
 import { sfx } from "./audio";
+import {
+  ARENA, PERSONALITIES, SpatialGrid, botStartMass, canEat, computeLeaderboard, decide,
+  makeBotName, pickPersonality, randomSkin, spawnPosAwayFrom, type Bot, type LeaderEntry,
+} from "./arena";
 
 interface Body {
   kind: Kind; x: number; y: number; vx: number; vy: number; r: number; mass: number;
   rot: number; spin: number; variant: number; sprite: Sprite | null; seed: number;
   absorbing: boolean; t: number; dur: number; a0: number; d0: number; dir: number;
   eligible: boolean; inField: boolean; dead: boolean; trailT: number;
+  /** Arena only: the bot absorbing this body. null = the player. */
+  absorber: Bot | null;
 }
 interface Particle { x: number; y: number; vx: number; vy: number; life: number; max: number; size: number; color: string; }
 interface Ring { x: number; y: number; r: number; max: number; life: number; dur: number; color: string; width: number; }
@@ -23,6 +29,8 @@ export interface EngineCallbacks {
   onToast?: (msg: string) => void;
   onTutorial?: (ev: "moved" | "pulled" | "absorbed") => void;
   onAbsorb?: (kind: Kind, gain: number, mass: number) => void;
+  onArena?: (a: { leaders: LeaderEntry[]; rank: number; alive: number }) => void;
+  onEliminated?: (killer: string) => void;
 }
 export interface EngineConfig { skin: string; settings: Settings; }
 
