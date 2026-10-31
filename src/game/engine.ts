@@ -48,7 +48,7 @@ export class Engine {
   cam = { x: 0, y: 0, zoom: 1 }; bgOff = { x: 0, y: 0 };
   time = 0; runTime = 0; shake = 0; flash = 0; flashColor = "#fff"; pulse = 0;
   keys = new Set<string>(); joy = { x: 0, y: 0 };
-  cfg: EngineConfig = { skin: "horizon", settings: { audio: true, sfx: 0.7, music: 0.4, shake: true, reduced: false } };
+  cfg: EngineConfig = { skin: "horizon", settings: { audio: true, sfx: 0.7, music: 0.4, shake: true, reduced: false, botCount: 100 } };
   skin: Skin = SKINS[0];
   topIdx = 0; hudT = 0; movedDist = 0; movedSent = false; pulledSent = false;
   highlight = false; demoDir = 0; seedN = 1; era = -1;
@@ -180,7 +180,7 @@ export class Engine {
       rot: Math.random() * TAU, spin: (Math.random() - 0.5) * (kind.tier === 0 ? 1.6 : kind.tier === 3 ? 0.15 : 0.3),
       variant, sprite: getSprite(kind, variant), seed: this.seedN++,
       absorbing: false, t: 0, dur: kind.absorbTime, a0: 0, d0: 0, dir: 1,
-      eligible: false, inField: false, dead: false, trailT: 0,
+      eligible: false, inField: false, dead: false, trailT: 0, absorber: null,
     });
   }
 
