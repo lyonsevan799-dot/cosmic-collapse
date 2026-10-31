@@ -5,7 +5,7 @@ export const SAVE_VERSION = 2;
 export const SAVE_KEY = "cosmic-collapse-save";
 export const MAX_MASS = 1e300;
 
-export interface Settings { audio: boolean; sfx: number; music: number; shake: boolean; reduced: boolean; }
+export interface Settings { audio: boolean; sfx: number; music: number; shake: boolean; reduced: boolean; botCount: number; }
 export interface LifetimeStats { absorbed: number; planets: number; stars: number; galaxies: number; playTime: number; }
 export interface SaveData {
   version: number;
@@ -26,7 +26,7 @@ export const defaultSave = (): SaveData => ({
   achievements: [],
   stats: { absorbed: 0, planets: 0, stars: 0, galaxies: 0, playTime: 0 },
   skin: "horizon",
-  settings: { audio: true, sfx: 0.7, music: 0.4, shake: true, reduced: false },
+  settings: { audio: true, sfx: 0.7, music: 0.4, shake: true, reduced: false, botCount: 100 },
   tutorialDone: false,
 });
 
@@ -62,6 +62,7 @@ export function validateSave(raw: unknown): SaveData {
       music: num(s.music, d.settings.music, 0, 1),
       shake: bool(s.shake, d.settings.shake),
       reduced: bool(s.reduced, d.settings.reduced),
+      botCount: Math.round(num(s.botCount, d.settings.botCount, 10, 150)),
     },
     tutorialDone: bool(r.tutorialDone, false),
   };
