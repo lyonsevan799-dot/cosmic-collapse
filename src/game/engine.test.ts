@@ -7,7 +7,7 @@ vi.mock("./sprites", () => ({ getSprite: () => null, VARIANTS: 4, rng: () => () 
 const gradient = { addColorStop: vi.fn() };
 const ctx = new Proxy({}, { get: (_target, key) => key === "createRadialGradient" || key === "createLinearGradient" ? () => gradient : () => {} });
 const tick = (e: Engine, seconds: number) => {
-  for (let t = 0; t < seconds; t += 1 / 60) (e as unknown as { update: (dt: number) => void }).update(1 / 60);
+  for (let t = 0; t < seconds && !e.paused; t += 1 / 60) (e as unknown as { update: (dt: number) => void }).update(1 / 60);
 };
 let engine: Engine;
 beforeEach(() => {
