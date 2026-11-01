@@ -90,7 +90,7 @@ export function botStartMass(rand: () => number, playerMass: number): number {
 
 /** A black hole can eat another hole only when clearly more massive. */
 export function canEat(attackerMass: number, victimMass: number): boolean {
-  return attackerMass >= victimMass * ARENA.eatRatio;
+  return attackerMass / victimMass >= ARENA.eatRatio;
 }
 
 /** Random point in the world disc, at least minDist away from (px, py). */
@@ -102,8 +102,10 @@ export function spawnPosAwayFrom(rand: () => number, px: number, py: number, min
     const y = Math.sin(a) * d;
     if (Math.hypot(x - px, y - py) >= minDist) return { x, y };
   }
-  const a = rand() * Math.PI * 2;
-  return { x: px + Math.cos(a) * minDist, y: py + Math.sin(a) * minDist };
+  const distance = Math.hypot(px, py);
+  if (minDist > distance + worldR) throw new RangeError("No safe spawn fits inside the arena");
+  const a = distance > 0 ? Math.atan2(py, px) + Math.PI : rand() * Math.PI * 2;
+  return { x: Math.cos(a) * worldR, y: Math.sin(a) * worldR };
 }
 
 export interface BotSenses {
@@ -170,10 +172,10 @@ export function computeLeaderboard(bots: { name: string; mass: number; alive: bo
 
 /** Uniform-grid spatial index so bots only compare against nearby objects. */
 export class SpatialGrid<T extends { x: number; y: number }> {
-  private map = new Map<number, T[]>();
+  private map = new Map<string, T[]>();
   constructor(public cell: number) {}
   private key(cx: number, cy: number) {
-    return (cx + 1024) * 4096 + (cy + 1024);
+    return `${cx},${cy}`;
   }
   clear() {
     for (const a of this.map.values()) a.length = 0;
