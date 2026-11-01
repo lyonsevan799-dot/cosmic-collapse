@@ -43,6 +43,12 @@ describe("arena rules", () => {
       expect(Math.hypot(p.x, p.y)).toBeGreaterThanOrEqual(799);
     }
   });
+  it("fallback spawns stay inside the world near its edge", () => {
+    const pos = spawnPosAwayFrom(() => 0, 950, 0, 900, 1000);
+    expect(Math.hypot(pos.x, pos.y)).toBeLessThanOrEqual(1000);
+    expect(Math.hypot(pos.x - 950, pos.y)).toBeGreaterThanOrEqual(900);
+    expect(() => spawnPosAwayFrom(() => 0, 0, 0, 1100, 1000)).toThrow(RangeError);
+  });
   it("leaderboard is sorted, top 10, with accurate player rank", () => {
     const bots = Array.from({ length: 12 }, (_, i) => ({ name: `B${i}`, mass: (i + 1) * 100, alive: true }));
     const lb = computeLeaderboard(bots, 50, true);

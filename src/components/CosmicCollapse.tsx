@@ -7,8 +7,10 @@ import {
 } from "@/game/logic";
 import { sfx } from "@/game/audio";
 import { drawBlackHole } from "@/game/blackhole";
+import { BOT_COUNT_OPTIONS, type LeaderEntry } from "@/game/arena";
+import { Button } from "@/components/ui/button";
 
-type Screen = "menu" | "play" | "achievements" | "stats" | "hangar" | "settings";
+type Screen = "menu" | "arena-setup" | "eliminated" | "play" | "achievements" | "stats" | "hangar" | "settings";
 interface Confirm { title: string; body: string; yes: string; onYes: () => void; }
 
 const TUTORIAL = [
@@ -38,6 +40,10 @@ export default function CosmicCollapse() {
   const toastId = useRef(0);
   const lastTime = useRef(0);
   const dirty = useRef(false);
+  const [arenaMode, setArenaMode] = useState(false);
+  const [arenaState, setArenaState] = useState<{ leaders: LeaderEntry[]; rank: number; alive: number }>({ leaders: [], rank: 101, alive: 101 });
+  const [killer, setKiller] = useState("");
+  const [feed, setFeed] = useState<string[]>([]);
 
   const commit = useCallback((s: SaveData) => { saveRef.current = s; setSave(s); writeSave(s); dirty.current = false; }, []);
   const toast = useCallback((msg: string, ach = false) => {
@@ -47,20 +53,25 @@ export default function CosmicCollapse() {
   }, []);
   /** Persist run mass + play time from the engine. */
   const flush = useCallback(() => {
-    const e = engineRef.current; if (!e || e.mode !== "play") return;
+    const e = engineRef.current; if (!e || e.mode !== "play" || e.arena) return;
     const dtp = Math.max(0, e.runTime - lastTime.current); lastTime.current = e.runTime;
     const s = saveRef.current;
     commit({ ...s, runMass: e.player.mass, bestMass: Math.max(s.bestMass, e.player.mass), stats: { ...s.stats, playTime: s.stats.playTime + dtp } });
   }, [commit]);
 
   useEffect(() => {
-    const e = new Engine(canvasRef.current!, {
+    const canvas = canvasRef.current; if (!canvas) return;
+    const e = new Engine(canvas, {
       onHud: setHud,
+      onArena: setArenaState,
+      onKill: (message) => setFeed((old) => [...old.slice(-2), message]),
+      onEliminated: (name) => { setKiller(name); setPaused(false); setScreen("eliminated"); },
       onPauseRequest: () => { if (!pausedRef.current) doPause(); else if (screenRef.current === "play") doResume(); },
       onBlur: () => doPause(),
       onToast: (m) => toast(m),
       onTutorial: (ev) => { tutRef.current.flags.add(ev); },
       onAbsorb: (kind, _gain, mass) => {
+        if (engineRef.current?.arena) return;
         let s = { ...saveRef.current, stats: recordAbsorb(saveRef.current.stats, kind) };
         const r = unlockAchievements(s, mass); s = r.save;
         saveRef.current = s; dirty.current = true;
@@ -112,13 +123,18 @@ export default function CosmicCollapse() {
   const doResume = () => { engineRef.current?.resume(); setPaused(false); };
 
   const startRun = (mass: number) => {
-    setPaused(false); setConfirm(null);
+    setArenaMode(false); setPaused(false); setConfirm(null);
     engineRef.current?.startRun(mass); lastTime.current = 0;
     commit({ ...saveRef.current, runMass: Math.max(PLAYER.startMass, mass) });
     tutRef.current.flags = new Set();
     setTutStep(!saveRef.current.tutorialDone ? 0 : null);
     setScreen("play");
   };
+  const startArena = () => {
+    flush(); setArenaMode(true); setPaused(false); setConfirm(null); setFeed([]); setTutStep(null);
+    engineRef.current?.startArena(saveRef.current.settings.botCount); setScreen("play");
+  };
+  const moveJoystick = useCallback((x: number, y: number) => engineRef.current?.setJoystick(x, y), []);
   const toMenu = () => { flush(); engineRef.current?.startDemo(); setPaused(false); setTutStep(null); setConfirm(null); setScreen("menu"); };
   const newGame = () => {
     if (saveRef.current.runMass > PLAYER.startMass + 5) setConfirm({ title: "Start a new black hole?", body: "Your current run's mass resets to 10. Personal best, achievements and stats are kept.", yes: "Start over", onYes: () => startRun(PLAYER.startMass) });
@@ -140,26 +156,50 @@ export default function CosmicCollapse() {
       </div>
 
       {screen === "menu" && (
-        <div className="cc-screen absolute inset-0 z-20 flex flex-col items-center justify-between p-6 sm:p-10">
+        <div className="cc-screen absolute inset-0 z-20 flex flex-col items-center justify-between gap-4 overflow-y-auto p-4 sm:p-6">
           <div className="flex w-full justify-end"><span className="cc-chip">Best {formatMass(save.bestMass)} mass</span></div>
           <div className="text-center">
-            <h1 className="cc-title text-5xl leading-none sm:text-7xl md:text-8xl">COSMIC<br />COLLAPSE</h1>
+            <h1 className="cc-title text-4xl leading-none sm:text-6xl md:text-7xl">COSMIC<br />COLLAPSE</h1>
             <p className="mt-3 text-sm text-muted-foreground sm:text-base">Begin as a speck. Never stop growing.</p>
           </div>
           <div className="flex w-full max-w-md flex-col gap-2">
-            {save.runMass > PLAYER.startMass && <button className="cc-btn cc-btn-primary py-4 text-base" onClick={() => { click(); startRun(saveRef.current.runMass); }}>Continue · {formatMass(save.runMass)} mass</button>}
-            <button className={`cc-btn py-4 text-base ${save.runMass > PLAYER.startMass ? "" : "cc-btn-primary"}`} onClick={() => { click(); newGame(); }}>{save.runMass > PLAYER.startMass ? "New Game" : "Play"}</button>
+            {save.runMass > PLAYER.startMass && <Button variant="secondary" className="cc-btn cc-btn-primary py-4 text-base" onClick={() => { click(); startRun(saveRef.current.runMass); }}>Continue · {formatMass(save.runMass)} mass</Button>}
+            <Button variant="secondary" className={`cc-btn py-4 text-base ${save.runMass > PLAYER.startMass ? "" : "cc-btn-primary"}`} onClick={() => { click(); newGame(); }}>{save.runMass > PLAYER.startMass ? "New Game" : "Play"}</Button>
+            <Button variant="secondary" className="cc-btn cc-btn-accent h-auto py-3" onClick={() => { click(); setScreen("arena-setup"); }}>AI Arena</Button>
             <div className="grid grid-cols-2 gap-2">
-              <button className="cc-btn" onClick={() => { click(); setScreen("achievements"); }}>Achievements</button>
-              <button className="cc-btn" onClick={() => { click(); setScreen("stats"); }}>Statistics</button>
-              <button className="cc-btn" onClick={() => { click(); setScreen("hangar"); }}>Skins</button>
-              <button className="cc-btn" onClick={() => { click(); setSettingsFrom("menu"); setScreen("settings"); }}>Settings</button>
+              <Button variant="secondary" className="cc-btn" onClick={() => { click(); setScreen("achievements"); }}>Achievements</Button>
+              <Button variant="secondary" className="cc-btn" onClick={() => { click(); setScreen("stats"); }}>Statistics</Button>
+              <Button variant="secondary" className="cc-btn" onClick={() => { click(); setScreen("hangar"); }}>Skins</Button>
+              <Button variant="secondary" className="cc-btn" onClick={() => { click(); setSettingsFrom("menu"); setScreen("settings"); }}>Settings</Button>
             </div>
             <p className="mt-2 text-center text-xs text-muted-foreground">WASD / arrows to move · Esc to pause · touch joystick on mobile</p>
           </div>
         </div>
       )}
 
+      {screen === "arena-setup" && (
+        <Overlay>
+          <h2 className="cc-title mb-2 text-3xl">AI Arena</h2>
+          <p className="mb-5 text-sm text-muted-foreground">Local AI opponents · no online players</p>
+          <fieldset className="mb-6 w-full"><legend className="mb-2 text-sm">Opponents</legend>
+            <div className="grid grid-cols-4 gap-2">{BOT_COUNT_OPTIONS.map((count) => (
+              <Button key={count} variant={save.settings.botCount === count ? "default" : "secondary"} aria-pressed={save.settings.botCount === count}
+                onClick={() => commit({ ...saveRef.current, settings: { ...saveRef.current.settings, botCount: count } })}>{count}</Button>
+            ))}</div>
+          </fieldset>
+          <Button className="cc-btn cc-btn-primary mb-2 h-auto w-full" onClick={() => { click(); startArena(); }}>Enter Arena</Button>
+          <Button variant="ghost" onClick={() => setScreen("menu")}>Back</Button>
+        </Overlay>
+      )}
+      {screen === "eliminated" && (
+        <Overlay>
+          <h2 className="cc-title mb-2 text-3xl">Absorbed</h2>
+          <p className="mb-1 text-sm">{killer} claimed your black hole.</p>
+          <p className="mb-6 text-sm text-muted-foreground">{formatMass(hud.mass)} mass · {fmtTime(hud.time)}</p>
+          <Button className="cc-btn cc-btn-primary mb-2 h-auto w-full" onClick={startArena}>Play Again</Button>
+          <Button variant="ghost" onClick={toMenu}>Main Menu</Button>
+        </Overlay>
+      )}
       {screen === "achievements" && (
         <Page title="Achievements" onBack={() => { click(); setScreen("menu"); }}>
           <p className="mb-4 text-center text-sm text-muted-foreground">{save.achievements.length} / {ACHIEVEMENTS.length} unlocked</p>
@@ -210,41 +250,51 @@ export default function CosmicCollapse() {
             <div className="cc-panel px-4 py-2">
               <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Mass</div>
               <div className="font-display text-2xl text-primary sm:text-3xl">{formatMass(hud.mass)}</div>
-              <div className="text-[11px] text-muted-foreground">Best {formatMass(best)}</div>
+              <div className="text-[11px] text-muted-foreground">{arenaMode ? `${arenaState.alive} in arena · AI bots` : `Best ${formatMass(best)}`}</div>
             </div>
-            <div className="cc-panel order-3 w-full px-3 py-2 sm:order-none sm:w-auto sm:min-w-[300px]">
+            {!arenaMode && <div className="cc-panel order-3 w-full px-3 py-2 sm:order-none sm:w-auto sm:min-w-[300px]">
               {next ? (<>
                 <div className="mb-1 flex justify-between gap-4 text-xs"><span className="text-muted-foreground">Next: {next.achievement.icon} {next.achievement.name}</span><span>{formatMass(next.achievement.mass)}</span></div>
                 <div className="cc-progress-track"><div className="cc-progress-fill" style={{ width: `${next.progress * 100}%` }} /></div>
               </>) : <div className="text-xs text-gold">All achievements unlocked — keep growing!</div>}
-            </div>
+            </div>}
             <div className="pointer-events-auto flex items-center gap-2">
-              <button className="cc-btn cc-icon-btn" aria-label={save.settings.audio ? "Mute sound" : "Unmute sound"} onClick={() => commit({ ...saveRef.current, settings: { ...saveRef.current.settings, audio: !saveRef.current.settings.audio } })}>{save.settings.audio ? "♪" : "✕"}</button>
-              <button className="cc-btn cc-icon-btn" aria-label="Pause" onClick={() => { click(); doPause(); }}>❚❚</button>
+              <Button variant="secondary" className="cc-btn cc-icon-btn" aria-label={save.settings.audio ? "Mute sound" : "Unmute sound"} onClick={() => commit({ ...saveRef.current, settings: { ...saveRef.current.settings, audio: !saveRef.current.settings.audio } })}>{save.settings.audio ? "♪" : "✕"}</Button>
+              <Button variant="secondary" className="cc-btn cc-icon-btn" aria-label="Pause" onClick={() => { click(); doPause(); }}>❚❚</Button>
             </div>
           </div>
 
+          {arenaMode && <div className="cc-panel absolute right-3 top-24 z-20 w-44 px-3 py-2 sm:right-4 sm:w-56">
+            <div className="mb-2 flex justify-between text-xs font-semibold"><span>Leaderboard</span><span className="text-primary">#{arenaState.rank}</span></div>
+            <ol className="space-y-1 text-[10px] sm:text-xs">{arenaState.leaders.map((entry, i) => (
+              <li key={entry.name} className={`flex items-center gap-1 ${entry.isPlayer ? "font-bold text-primary" : "text-muted-foreground"}`}>
+                <span className="w-4 shrink-0">{i + 1}</span><span className="min-w-0 flex-1 truncate">{entry.name}</span><span>{formatMass(entry.mass)}</span>
+              </li>
+            ))}</ol>
+            <div className="mt-2 border-t border-border pt-2 text-xs text-primary">{arenaState.rank === 1 ? "♛ Arena leader" : `You · rank ${arenaState.rank}`}</div>
+          </div>}
+          {arenaMode && <div className="pointer-events-none absolute bottom-4 right-3 z-20 max-w-[55%] text-right text-[10px] text-muted-foreground">{feed.map((line, i) => <div key={`${line}-${i}`}>{line}</div>)}</div>}
           {tut !== null && !paused && (
             <div className="absolute inset-x-0 bottom-36 z-20 flex justify-center px-4 sm:bottom-10">
               <div className="cc-panel cc-screen flex max-w-md items-center gap-3 px-4 py-3" key={tut}>
                 <span className="font-display text-xs text-primary">{tut + 1}/5</span>
                 <p className="text-sm">{tut === 0 && coarse ? "Move with the joystick." : TUTORIAL[tut]}</p>
-                <button className="cc-btn cc-btn-ghost px-3 py-1 text-xs" onClick={endTut}>Skip</button>
+                <Button variant="secondary" className="cc-btn cc-btn-ghost px-3 py-1 text-xs" onClick={endTut}>Skip</Button>
               </div>
             </div>
           )}
 
-          {coarse && !paused && <Joystick onMove={(x, y) => engineRef.current?.setJoystick(x, y)} />}
+          {coarse && !paused && <Joystick onMove={moveJoystick} />}
 
           {paused && !confirm && (
             <Overlay>
               <h2 className="cc-title mb-1 text-3xl">Paused</h2>
               <p className="mb-6 text-sm text-muted-foreground">{formatMass(hud.mass)} mass · best {formatMass(best)}</p>
               <div className="flex w-full flex-col gap-2">
-                <button className="cc-btn cc-btn-primary" onClick={() => { click(); doResume(); }} autoFocus>Resume</button>
-                <button className="cc-btn" onClick={() => { click(); setConfirm({ title: "Restart from 10 mass?", body: "Your current mass resets. Personal best, achievements and stats are kept.", yes: "Restart", onYes: () => startRun(PLAYER.startMass) }); }}>Restart</button>
-                <button className="cc-btn" onClick={() => { click(); setSettingsFrom("pause"); setScreen("settings"); }}>Settings</button>
-                <button className="cc-btn cc-btn-ghost" onClick={() => { click(); toMenu(); }}>Save &amp; Main Menu</button>
+                <Button variant="secondary" className="cc-btn cc-btn-primary" onClick={() => { click(); doResume(); }} autoFocus>Resume</Button>
+                <Button variant="secondary" className="cc-btn" onClick={() => { click(); setConfirm({ title: "Restart from 10 mass?", body: "Your current mass resets. Personal best, achievements and stats are kept.", yes: "Restart", onYes: () => arenaMode ? startArena() : startRun(PLAYER.startMass) }); }}>Restart</Button>
+                <Button variant="secondary" className="cc-btn" onClick={() => { click(); setSettingsFrom("pause"); setScreen("settings"); }}>Settings</Button>
+                <Button variant="secondary" className="cc-btn cc-btn-ghost" onClick={() => { click(); toMenu(); }}>{arenaMode ? "Main Menu" : "Save & Main Menu"}</Button>
               </div>
             </Overlay>
           )}
@@ -256,8 +306,8 @@ export default function CosmicCollapse() {
           <h2 className="font-display mb-2 text-xl font-semibold">{confirm.title}</h2>
           <p className="mb-6 text-sm text-muted-foreground">{confirm.body}</p>
           <div className="flex w-full gap-2">
-            <button className="cc-btn flex-1" autoFocus onClick={() => { click(); setConfirm(null); }}>Cancel</button>
-            <button className="cc-btn cc-btn-danger flex-1" onClick={() => { click(); const f = confirm.onYes; setConfirm(null); f(); }}>{confirm.yes}</button>
+            <Button variant="secondary" className="cc-btn flex-1" autoFocus onClick={() => { click(); setConfirm(null); }}>Cancel</Button>
+            <Button variant="secondary" className="cc-btn cc-btn-danger flex-1" onClick={() => { click(); const f = confirm.onYes; setConfirm(null); f(); }}>{confirm.yes}</Button>
           </div>
         </Overlay>
       )}
@@ -280,7 +330,7 @@ function Page({ title, onBack, children }: { title: string; onBack: () => void; 
     <div className="absolute inset-0 z-20 overflow-y-auto bg-background/70" style={{ touchAction: "pan-y" }}>
       <div className="cc-screen mx-auto max-w-5xl p-4 sm:p-8">
         <div className="mb-6 flex items-center justify-between gap-3">
-          <button className="cc-btn" onClick={onBack}>← Back</button>
+          <Button variant="secondary" className="cc-btn" onClick={onBack}>← Back</Button>
           <h2 className="cc-title text-2xl sm:text-3xl">{title}</h2>
           <span className="w-16" />
         </div>
@@ -293,9 +343,9 @@ function Page({ title, onBack, children }: { title: string; onBack: () => void; 
 function SkinPreview({ skinId, size }: { skinId: string; size: number }) {
   const ref = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
-    const c = ref.current!; const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const c = ref.current; if (!c) return; const dpr = Math.min(2, window.devicePixelRatio || 1);
     c.width = size * dpr; c.height = size * dpr;
-    const ctx = c.getContext("2d")!; const skin = SKINS.find((s) => s.id === skinId)!;
+    const ctx = c.getContext("2d"); const skin = SKINS.find((s) => s.id === skinId); if (!ctx || !skin) return;
     let raf = 0; const t0 = performance.now();
     const draw = (now: number) => {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, size, size);
@@ -310,7 +360,7 @@ function SkinPreview({ skinId, size }: { skinId: string; size: number }) {
 
 function Hangar({ save, onBack, onEquip }: { save: SaveData; onBack: () => void; onEquip: (id: string) => void }) {
   const [sel, setSel] = useState(save.skin);
-  const skin = SKINS.find((s) => s.id === sel)!;
+  const skin = SKINS.find((s) => s.id === sel) ?? SKINS[0];
   const owned = skinOwned(save, sel); const equipped = save.skin === sel;
   const ach = ACHIEVEMENTS.find((a) => a.id === skin.achievement);
   return (
@@ -320,17 +370,17 @@ function Hangar({ save, onBack, onEquip }: { save: SaveData; onBack: () => void;
           <SkinPreview skinId={sel} size={280} />
           <h3 className="font-display text-xl">{skin.name}</h3>
           <p className="mb-3 text-xs text-muted-foreground">{equipped ? "Equipped" : owned ? "Unlocked" : `Unlock with achievement: ${ach?.name}`}</p>
-          <button className="cc-btn cc-btn-primary w-full" disabled={!owned || equipped} onClick={() => onEquip(sel)}>{equipped ? "Equipped" : owned ? "Equip" : "Locked"}</button>
+          <Button variant="secondary" className="cc-btn cc-btn-primary w-full" disabled={!owned || equipped} onClick={() => onEquip(sel)}>{equipped ? "Equipped" : owned ? "Equip" : "Locked"}</Button>
         </div>
         <div className="grid grid-cols-2 gap-3">
           {SKINS.map((s) => {
             const o = skinOwned(save, s.id);
             return (
-              <button key={s.id} onClick={() => setSel(s.id)} className={`cc-panel cc-btn flex-col items-start gap-2 p-3 text-left ${sel === s.id ? "border-primary" : ""}`}>
+              <Button variant="secondary" key={s.id} onClick={() => setSel(s.id)} className={`cc-panel cc-btn flex-col items-start gap-2 p-3 text-left ${sel === s.id ? "border-primary" : ""}`}>
                 <div className="h-6 w-full rounded-md" style={{ background: `linear-gradient(90deg, ${s.hot}, ${s.mid}, ${s.outer})` }} />
                 <span className="text-sm">{s.name}</span>
                 <span className="text-xs font-normal text-muted-foreground">{save.skin === s.id ? "★ Equipped" : o ? "✓ Owned" : "🔒 Achievement"}</span>
-              </button>
+              </Button>
             );
           })}
         </div>
@@ -362,7 +412,7 @@ function SettingsScreen({ save, onChange, onBack, onReset }: { save: SaveData; o
         <Toggle label="Screen shake" k="shake" />
         <Toggle label="Reduced effects" k="reduced" hint="Fewer particles and softer flashes" />
         <div className="py-4">
-          <button className="cc-btn cc-btn-danger w-full" onClick={onReset}>Reset saved progress</button>
+          <Button variant="secondary" className="cc-btn cc-btn-danger w-full" onClick={onReset}>Reset saved progress</Button>
           {!storageAvailable && <p className="mt-2 text-xs text-destructive">Your browser is blocking local storage, so progress will only last for this session.</p>}
         </div>
       </div>
@@ -388,9 +438,9 @@ function Joystick({ onMove }: { onMove: (x: number, y: number) => void }) {
   useEffect(() => () => onMove(0, 0), [onMove]);
   return (
     <div className="cc-joy-base absolute bottom-8 left-8 z-20 flex h-32 w-32 items-center justify-center" style={{ touchAction: "none" }}
-      onPointerDown={(e) => { const r = e.currentTarget.getBoundingClientRect(); center.current = { x: r.left + r.width / 2, y: r.top + r.height / 2 }; active.current = e.pointerId; e.currentTarget.setPointerCapture(e.pointerId); update(e); }}
+      onPointerDown={(e) => { if (active.current !== null) return; const r = e.currentTarget.getBoundingClientRect(); center.current = { x: r.left + r.width / 2, y: r.top + r.height / 2 }; active.current = e.pointerId; e.currentTarget.setPointerCapture(e.pointerId); update(e); }}
       onPointerMove={(e) => { if (active.current === e.pointerId) update(e); }}
-      onPointerUp={end} onPointerCancel={end} onLostPointerCapture={end}>
+      onPointerUp={(e) => { if (active.current === e.pointerId) end(); }} onPointerCancel={(e) => { if (active.current === e.pointerId) end(); }} onLostPointerCapture={(e) => { if (active.current === e.pointerId) end(); }}>
       <div className="cc-joy-knob h-14 w-14" style={{ transform: `translate(${knob.x}px, ${knob.y}px)` }} />
     </div>
   );
