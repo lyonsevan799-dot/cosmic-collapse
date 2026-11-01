@@ -56,7 +56,7 @@ export class Engine {
   starTiles: HTMLCanvasElement[] = []; nebula: HTMLCanvasElement | null = null; nebulaHues = "";
   shooting: { x: number; y: number; vx: number; vy: number; life: number } | null = null;
   arena = false; bots: Bot[] = []; playerAlive = true;
-  worldR = ARENA.worldRadius; arenaHudT = 0; playerDieT = 0;
+  worldR: number = ARENA.worldRadius; arenaHudT = 0; playerDieT = 0;
   playerKiller: Bot | null = null;
   private botGrid = new SpatialGrid<Bot>(240);
   private foodGrid = new SpatialGrid<Body>(240);
@@ -542,7 +542,7 @@ export class Engine {
     const layers = [{ n: 260, s: 0.8, a: 0.5 }, { n: 120, s: 1.3, a: 0.75 }, { n: 45, s: 2, a: 1 }];
     this.starTiles = layers.map((L, li) => {
       const c = document.createElement("canvas"); c.width = c.height = 1024;
-      const x = c.getContext("2d")!; const r = rng(li * 77 + 3);
+      const x = c.getContext("2d"); if (!x) throw new Error("Canvas rendering is unavailable"); const r = rng(li * 77 + 3);
       if (li === 0) { // distant galaxies
         for (let g = 0; g < 3; g++) {
           const gx = r() * 1024, gy = r() * 1024, gr = 20 + r() * 30;
@@ -565,7 +565,7 @@ export class Engine {
     const key = hues.join(","); if (key === this.nebulaHues && this.nebula) return;
     this.nebulaHues = key;
     const c = this.nebula ?? document.createElement("canvas"); c.width = c.height = 1024;
-    const x = c.getContext("2d")!; x.clearRect(0, 0, 1024, 1024);
+    const x = c.getContext("2d"); if (!x) return; x.clearRect(0, 0, 1024, 1024);
     const r = rng(hues[0] * 13 + hues[1]);
     for (let i = 0; i < 14; i++) {
       const h = i % 2 ? hues[0] : hues[1];
@@ -732,7 +732,7 @@ export class Engine {
   private starFx(b: Body, R: number, t: number) {
     const ctx = this.ctx;
     if (b.kind.style === "star") {
-      const tint = b.sprite!.tint;
+      const tint = b.sprite?.tint ?? this.skin.mid;
       ctx.save(); ctx.rotate(t * 0.15 + b.seed);
       ctx.globalCompositeOperation = "lighter";
       for (let i = 0; i < 8; i++) {
@@ -751,7 +751,7 @@ export class Engine {
       ctx.restore(); ctx.globalCompositeOperation = "source-over";
     } else if (b.kind.style === "relic") {
       ctx.save(); ctx.globalCompositeOperation = "lighter";
-      ctx.strokeStyle = b.sprite!.tint; ctx.globalAlpha = 0.5 + 0.3 * Math.sin(t * 3); ctx.lineWidth = 2;
+      ctx.strokeStyle = b.sprite?.tint ?? this.skin.mid; ctx.globalAlpha = 0.5 + 0.3 * Math.sin(t * 3); ctx.lineWidth = 2;
       ctx.beginPath(); ctx.arc(0, 0, R * (1.3 + 0.1 * Math.sin(t * 2)), 0, TAU); ctx.stroke();
       ctx.restore(); ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
     }
