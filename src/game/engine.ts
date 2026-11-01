@@ -31,6 +31,7 @@ export interface EngineCallbacks {
   onAbsorb?: (kind: Kind, gain: number, mass: number) => void;
   onArena?: (a: { leaders: LeaderEntry[]; rank: number; alive: number }) => void;
   onEliminated?: (killer: string) => void;
+  onKill?: (message: string) => void;
 }
 export interface EngineConfig { skin: string; settings: Settings; }
 
@@ -54,10 +55,17 @@ export class Engine {
   highlight = false; demoDir = 0; seedN = 1; era = -1;
   starTiles: HTMLCanvasElement[] = []; nebula: HTMLCanvasElement | null = null; nebulaHues = "";
   shooting: { x: number; y: number; vx: number; vy: number; life: number } | null = null;
+  arena = false; bots: Bot[] = []; playerAlive = true;
+  worldR = ARENA.worldRadius; arenaHudT = 0; playerDieT = 0;
+  playerKiller: Bot | null = null;
+  private botGrid = new SpatialGrid<Bot>(240);
+  private foodGrid = new SpatialGrid<Body>(240);
 
   constructor(canvas: HTMLCanvasElement, cb: EngineCallbacks) {
     this.canvas = canvas; this.cb = cb;
-    this.ctx = canvas.getContext("2d")!;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas rendering is unavailable");
+    this.ctx = ctx;
     this.resize();
     window.addEventListener("resize", this.resize);
     window.addEventListener("keydown", this.onKeyDown);
@@ -119,8 +127,26 @@ export class Engine {
     this.updateEra(true);
     for (let i = 0; i < PLAYER.density; i++) this.spawn(true);
   }
-  startDemo() { this.mode = "demo"; this.paused = false; this.reset(300); }
-  startRun(mass: number) { this.mode = "play"; this.paused = false; this.reset(Math.max(PLAYER.startMass, mass)); this.emitHud(); }
+  startDemo() { this.arena = false; this.bots = []; this.mode = "demo"; this.paused = false; this.reset(300); }
+  startRun(mass: number) { this.arena = false; this.bots = []; this.playerAlive = true; this.mode = "play"; this.paused = false; this.reset(Math.max(PLAYER.startMass, mass)); this.emitHud(); }
+  startArena(count = this.cfg.settings.botCount) {
+    this.startRun(PLAYER.startMass);
+    this.arena = true; this.playerDieT = 0; this.playerKiller = null;
+    this.worldR = Math.max(1800, this.viewRadius() * 4);
+    const used = new Set<string>();
+    this.bots = Array.from({ length: Math.max(10, Math.min(150, Math.round(count))) }, (_, id) => {
+      const mass = botStartMass(Math.random, PLAYER.startMass);
+      const pos = spawnPosAwayFrom(Math.random, 0, 0, this.viewRadius() * 0.55, this.worldR * 0.9);
+      return { id, name: makeBotName(Math.random, used), skin: randomSkin(Math.random), ...pos,
+        vx: 0, vy: 0, mass, disp: mass, personality: pickPersonality(Math.random),
+        speed: 0.8 + Math.random() * 0.35, thinkT: Math.random() * 0.4, mode: "wander" as const,
+        tx: pos.x, ty: pos.y, foodRef: null, alive: true, respawnT: 0,
+        dying: false, dieT: 0, dieDur: 0.6, eater: null, wob: Math.random() * TAU };
+    });
+    this.bodies = [];
+    for (let i = 0; i < ARENA.density; i++) this.spawnArenaFood(i < 70);
+    this.emitArena(); this.emitHud();
+  }
   pause() { this.paused = true; this.resetInput(); }
   resume() { this.paused = false; this.resetInput(); this.last = performance.now(); }
 
@@ -184,6 +210,120 @@ export class Engine {
     });
   }
 
+  private spawnArenaFood(nearPlayer = false) {
+    // Reuse the exact object construction and mass rules from endless mode.
+    const oldTop = this.topIdx;
+    const bot = this.bots[Math.floor(Math.random() * this.bots.length)];
+    this.topIdx = nearPlayer ? oldTop : topEligibleIndex(bot?.mass ?? this.player.mass);
+    this.spawn(true, true); this.topIdx = oldTop;
+    const body = this.bodies[this.bodies.length - 1];
+    if (!body || nearPlayer) return;
+    const a = Math.random() * TAU, d = Math.sqrt(Math.random()) * this.worldR * 0.97;
+    body.x = Math.cos(a) * d; body.y = Math.sin(a) * d;
+  }
+
+  private clampToArena(o: { x: number; y: number; vx: number; vy: number }) {
+    const d = Math.hypot(o.x, o.y);
+    if (d <= this.worldR) return;
+    o.x *= this.worldR / d; o.y *= this.worldR / d;
+    o.vx *= 0.3; o.vy *= 0.3;
+  }
+
+  private emitArena() {
+    const lb = computeLeaderboard(this.bots, this.player.mass, this.playerAlive);
+    this.cb.onArena?.({ ...lb, alive: this.bots.filter((b) => b.alive).length + (this.playerAlive ? 1 : 0) });
+  }
+
+  private eatBot(victim: Bot, eater: Bot | "player") {
+    if (!victim.alive || victim.dying) return;
+    victim.alive = false; victim.dying = true; victim.dieT = 0; victim.eater = eater;
+    this.cb.onKill?.(`${eater === "player" ? "You" : eater.name} absorbed ${victim.name}`);
+  }
+
+  private updateBots(dt: number) {
+    const P = this.player;
+    this.botGrid.clear(); this.foodGrid.clear();
+    for (const b of this.bots) if (b.alive) this.botGrid.insert(b);
+    for (const b of this.bodies) if (!b.dead && !b.absorbing) this.foodGrid.insert(b);
+    for (const bot of this.bots) {
+      if (bot.dying) {
+        bot.dieT += dt;
+        const target = bot.eater === "player" ? P : bot.eater;
+        if (target) { bot.x += (target.x - bot.x) * Math.min(1, dt * 9); bot.y += (target.y - bot.y) * Math.min(1, dt * 9); }
+        if (bot.dieT >= bot.dieDur) {
+          if (bot.eater === "player" && this.playerAlive) {
+            P.mass = addMass(P.mass, bot.mass); this.topIdx = topEligibleIndex(P.mass);
+            this.texts.push({ text: `+${formatMass(bot.mass)} MASS`, life: 0, color: this.skin.mid, big: true });
+            sfx.absorbPlanet();
+          } else if (bot.eater && bot.eater !== "player" && bot.eater.alive) bot.eater.mass = addMass(bot.eater.mass, bot.mass);
+          bot.dying = false; bot.eater = null;
+          bot.respawnT = ARENA.respawnMin + Math.random() * (ARENA.respawnMax - ARENA.respawnMin);
+        }
+        continue;
+      }
+      if (!bot.alive) {
+        bot.respawnT -= dt;
+        if (bot.respawnT <= 0) {
+          Object.assign(bot, spawnPosAwayFrom(Math.random, P.x, P.y, this.viewRadius() * 0.7, this.worldR * 0.9));
+          bot.mass = bot.disp = botStartMass(Math.random, PLAYER.startMass);
+          bot.vx = bot.vy = 0; bot.alive = true; bot.thinkT = 0; bot.mode = "wander";
+        }
+        continue;
+      }
+      const r = radiusForMass(bot.mass);
+      bot.thinkT -= dt;
+      if (bot.thinkT <= 0) {
+        const react = PERSONALITIES[bot.personality].react;
+        bot.thinkT = react[0] + Math.random() * (react[1] - react[0]);
+        const nearby: Bot[] = []; this.botGrid.query(bot.x, bot.y, r * ARENA.senseMult, nearby);
+        let threat: { x: number; y: number } | null = null, prey: { x: number; y: number } | null = null;
+        let td = Infinity, pd = Infinity;
+        for (const other of [...nearby, ...(this.playerAlive ? [P] : [])]) {
+          if (other === bot || ("alive" in other && !other.alive)) continue;
+          const d = Math.hypot(other.x - bot.x, other.y - bot.y);
+          if (d > r * ARENA.senseMult) continue;
+          if (canEat(other.mass, bot.mass) && d < td) { threat = other; td = d; }
+          if (canEat(bot.mass, other.mass) && d < pd) { prey = other; pd = d; }
+        }
+        const foods: Body[] = []; this.foodGrid.query(bot.x, bot.y, r * ARENA.senseMult, foods);
+        let food: Body | null = null, fd = Infinity;
+        for (const b of foods) if (canAbsorb(bot.mass, b.kind)) {
+          const d = Math.hypot(b.x - bot.x, b.y - bot.y) / Math.sqrt(b.mass + 1);
+          if (d < fd) { food = b; fd = d; }
+        }
+        decide(bot, { threat, prey, food }, Math.random, this.worldR);
+      }
+      const dx = bot.tx - bot.x, dy = bot.ty - bot.y, d = Math.hypot(dx, dy) || 1;
+      const a = Math.atan2(dy, dx) + Math.sin(this.time * 1.4 + bot.wob) * 0.12;
+      const speed = PLAYER.speedPerRadius * r * bot.speed * Math.min(1, d / (r * 3));
+      const f = 1 - Math.exp(-dt * PLAYER.accel);
+      bot.vx += (Math.cos(a) * speed - bot.vx) * f; bot.vy += (Math.sin(a) * speed - bot.vy) * f;
+      bot.x += bot.vx * dt; bot.y += bot.vy * dt; this.clampToArena(bot);
+      bot.disp = Math.exp(Math.log(bot.disp) + (Math.log(bot.mass) - Math.log(bot.disp)) * (1 - Math.exp(-dt * 4)));
+      const nearby: Bot[] = []; this.botGrid.query(bot.x, bot.y, r * 3, nearby);
+      for (const other of nearby) if (other !== bot && other.alive && canEat(bot.mass, other.mass)
+        && Math.hypot(bot.x - other.x, bot.y - other.y) < r * 0.95 + radiusForMass(other.mass) * 0.35) this.eatBot(other, bot);
+      if (this.playerAlive) {
+        const distance = Math.hypot(bot.x - P.x, bot.y - P.y);
+        if (canEat(P.mass, bot.mass) && distance < radiusForMass(P.mass) * 0.95 + r * 0.35) this.eatBot(bot, "player");
+        else if (canEat(bot.mass, P.mass) && distance < r * 0.95 + radiusForMass(P.mass) * 0.35) {
+          this.playerAlive = false; this.playerKiller = bot; this.playerDieT = 0; this.resetInput();
+          this.cb.onKill?.(`${bot.name} absorbed You`);
+        }
+      }
+    }
+    if (!this.playerAlive && this.playerKiller) {
+      this.playerDieT += dt;
+      P.x += (this.playerKiller.x - P.x) * Math.min(1, dt * 9); P.y += (this.playerKiller.y - P.y) * Math.min(1, dt * 9);
+      if (this.playerDieT >= 0.65) {
+        if (this.playerKiller.alive) this.playerKiller.mass = addMass(this.playerKiller.mass, P.mass);
+        this.pause(); this.emitHud(); this.emitArena(); this.cb.onEliminated?.(this.playerKiller.name);
+      }
+    }
+    this.arenaHudT -= dt;
+    if (this.arenaHudT <= 0) { this.arenaHudT = 0.25; this.emitArena(); }
+  }
+
   // ---------- loop ----------
   loop = (now: number) => {
     if (this.destroyed) return;
@@ -196,6 +336,7 @@ export class Engine {
 
   /** Keep coordinates near the origin so precision holds at any scale. */
   private rebase() {
+    if (this.arena) return;
     const P = this.player;
     const lim = radiusForMass(P.mass) * 2000;
     if (Math.abs(P.x) < lim && Math.abs(P.y) < lim) return;
@@ -213,13 +354,13 @@ export class Engine {
     if (playing) this.runTime += dt;
 
     let ix = 0, iy = 0;
-    if (playing) {
+    if (playing && this.playerAlive) {
       if (this.keys.has("a") || this.keys.has("arrowleft")) ix -= 1;
       if (this.keys.has("d") || this.keys.has("arrowright")) ix += 1;
       if (this.keys.has("w") || this.keys.has("arrowup")) iy -= 1;
       if (this.keys.has("s") || this.keys.has("arrowdown")) iy += 1;
       ix += this.joy.x; iy += this.joy.y;
-    } else {
+    } else if (!playing) {
       this.demoDir += (Math.sin(this.time * 0.37) * 0.6 + Math.sin(this.time * 0.13)) * dt;
       ix = Math.cos(this.demoDir) * 0.55; iy = Math.sin(this.demoDir) * 0.55;
     }
@@ -233,6 +374,7 @@ export class Engine {
     const f = 1 - Math.exp(-dt * rate);
     P.vx += (ix * maxSpeed - P.vx) * f; P.vy += (iy * maxSpeed - P.vy) * f;
     P.x += P.vx * dt; P.y += P.vy * dt;
+    if (this.arena) { this.clampToArena(P); this.updateBots(dt); }
     if (playing && !this.movedSent) {
       this.movedDist += Math.hypot(P.vx, P.vy) * dt * this.cam.zoom;
       if (this.movedDist > 260) { this.movedSent = true; this.cb.onTutorial?.("moved"); }
@@ -253,31 +395,46 @@ export class Engine {
     for (const b of this.bodies) {
       b.rot += b.spin * dt;
       if (b.absorbing) {
+        if (b.absorber && !b.absorber.alive) { b.absorbing = false; b.absorber = null; b.vx = b.vy = 0; continue; }
+        const owner = b.absorber ?? P;
         b.t += dt;
         const p = Math.min(1, b.t / b.dur);
         const e = p * p * (1.6 - 0.6 * p);
         const ang = b.a0 + b.dir * e * Math.PI * 1.6;
         const d = b.d0 * (1 - e);
-        b.x = P.x + Math.cos(ang) * d; b.y = P.y + Math.sin(ang) * d;
+        b.x = owner.x + Math.cos(ang) * d; b.y = owner.y + Math.sin(ang) * d;
         b.rot += b.dir * dt * 6 * e;
         b.trailT -= dt;
         if (b.kind.tier >= 1 && b.trailT <= 0) { b.trailT = 0.03; this.emit(b.x, b.y, 1, b.sprite?.tint ?? "#fff", b.r * z * 0.25, 20); }
         if (p >= 1 && !b.dead) this.consume(b);
         continue;
       }
-      const dx = P.x - b.x, dy = P.y - b.y;
+      let owner: Bot | typeof P | null = this.playerAlive ? P : null;
+      if (this.arena) {
+        let nearest = owner && canAbsorb(P.mass, b.kind) ? Math.hypot(P.x - b.x, P.y - b.y) / pr : Infinity;
+        const nearby: Bot[] = []; this.botGrid.query(b.x, b.y, 700, nearby);
+        for (const bot of nearby) if (bot.alive && canAbsorb(bot.mass, b.kind)) {
+          const r = radiusForMass(bot.mass), d = Math.hypot(bot.x - b.x, bot.y - b.y);
+          if (d < r * PLAYER.gravityMult + b.r && d / r < nearest) { owner = bot; nearest = d / r; }
+        }
+      }
+      const target = owner ?? P;
+      const ownerR = owner && "alive" in owner ? radiusForMass(owner.disp) : pr;
+      const ownerGrav = ownerR * PLAYER.gravityMult;
+      const dx = target.x - b.x, dy = target.y - b.y;
       const d = Math.hypot(dx, dy) || 1e-9;
-      b.eligible = canAbsorb(P.mass, b.kind);
+      b.eligible = !!owner && canAbsorb(target.mass, b.kind);
       if (b.eligible) eligibleCount++;
-      b.inField = d < gravR + b.r;
+      b.inField = !!owner && d < ownerGrav + b.r;
       if (b.inField && b.eligible) {
-        if (playing && !this.pulledSent) { this.pulledSent = true; this.cb.onTutorial?.("pulled"); }
-        const closeness = 1 - Math.min(1, d / (gravR + b.r));
-        const a = 42 * pr * b.kind.pull * (0.4 + 2.6 * closeness * closeness);
+        if (playing && owner === P && !this.pulledSent) { this.pulledSent = true; this.cb.onTutorial?.("pulled"); }
+        const closeness = 1 - Math.min(1, d / (ownerGrav + b.r));
+        const a = 42 * ownerR * b.kind.pull * (0.4 + 2.6 * closeness * closeness);
         const nx = dx / d, ny = dy / d;
         b.vx += (nx * a - ny * a * 0.35) * dt; b.vy += (ny * a + nx * a * 0.35) * dt;
         b.vx *= 1 - Math.min(1, dt * 1.5); b.vy *= 1 - Math.min(1, dt * 1.5);
-        if (d < pr * 0.95 + b.r * 0.35) {
+        if (d < ownerR * 0.95 + b.r * 0.35) {
+          b.absorber = owner && "alive" in owner ? owner : null;
           b.absorbing = true; b.t = 0; b.a0 = Math.atan2(-dy, -dx); b.d0 = d;
           b.dir = (nx * b.vy - ny * b.vx) >= 0 ? -1 : 1;
           b.dur = b.kind.absorbTime;
@@ -286,12 +443,17 @@ export class Engine {
         b.vx *= 1 - Math.min(1, dt * 0.2); b.vy *= 1 - Math.min(1, dt * 0.2);
       }
       b.x += b.vx * dt; b.y += b.vy * dt;
-      if (d > vr * 2.4 + b.r) b.dead = true;
-      else if (b.r * z < 0.5) b.dead = true; // outgrown: too small to see, recycle
+      if (this.arena) { if (Math.hypot(b.x, b.y) > this.worldR * 1.05) b.dead = true; }
+      else if (d > vr * 2.4 + b.r || b.r * z < 0.5) b.dead = true;
     }
     if (this.bodies.some((b) => b.dead)) this.bodies = this.bodies.filter((b) => !b.dead);
     let n = 0;
-    while (this.bodies.length < PLAYER.density && n++ < 5) this.spawn(false, eligibleCount < PLAYER.density * 0.45);
+    while (this.bodies.length < (this.arena ? ARENA.density : PLAYER.density) && n++ < 5) {
+      if (this.arena) {
+        const localFood = this.bodies.filter((b) => !b.absorbing && canAbsorb(P.mass, b.kind) && Math.hypot(b.x - P.x, b.y - P.y) < vr).length;
+        this.spawnArenaFood(localFood < 25);
+      } else this.spawn(false, eligibleCount < PLAYER.density * 0.45);
+    }
 
     for (let i = this.particles.length - 1; i >= 0; i--) {
       const p = this.particles[i]; p.life -= dt;
@@ -317,10 +479,17 @@ export class Engine {
   emitHud() { this.cb.onHud?.({ mass: this.player.mass, time: this.runTime }); }
 
   private consume(b: Body) {
+    if (b.dead) return;
     b.dead = true;
     const P = this.player;
     const kind = b.kind;
     const gain = Math.max(1, kind.mass < 1000 ? Math.round(b.mass) : b.mass);
+    if (b.absorber) {
+      if (b.absorber.alive) b.absorber.mass = addMass(b.absorber.mass, gain);
+      this.emit(b.x, b.y, this.cfg.settings.reduced ? 2 : 8, b.absorber.skin.mid, 2, 80);
+      return;
+    }
+    if (this.arena && !this.playerAlive) return;
     P.mass = addMass(P.mass, gain);
     const tint = b.sprite?.tint ?? "#bfefff";
     const playing = this.mode === "play";
@@ -524,7 +693,24 @@ export class Engine {
     }
     ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
 
-    drawBlackHole(ctx, px, py, prS * (1 + this.pulse * 0.06), t, this.skin, red, this.pulse * 0.6 + grand * 0.8);
+    if (this.arena) {
+      ctx.strokeStyle = this.skin.outer; ctx.globalAlpha = 0.35; ctx.lineWidth = 2;
+      ctx.setLineDash([12, 12]); ctx.beginPath(); ctx.arc(cx, cy, this.worldR * z, 0, TAU); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+      for (const bot of this.bots) {
+        if (!bot.alive && !bot.dying) continue;
+        const bx = cx + bot.x * z, by = cy + bot.y * z;
+        const r = radiusForMass(bot.disp) * z * (bot.dying ? Math.max(0.06, 1 - bot.dieT / bot.dieDur) : 1);
+        if (bx < -r * 4 || bx > w + r * 4 || by < -r * 4 || by > h + r * 4) continue;
+        drawBlackHole(ctx, bx, by, r, t + bot.wob, bot.skin, red);
+        if (bot.alive && r > 3) {
+          ctx.textAlign = "center"; ctx.font = "600 11px Sora, system-ui, sans-serif";
+          ctx.fillStyle = bot.skin.mid; ctx.fillText(bot.name, bx, by - r * 2 - 6);
+        }
+      }
+    }
+    const playerScale = this.arena && !this.playerAlive ? Math.max(0.02, 1 - this.playerDieT / 0.65) : 1;
+    drawBlackHole(ctx, px, py, prS * playerScale * (1 + this.pulse * 0.06), t, this.skin, red, this.pulse * 0.6 + grand * 0.8);
+    if (this.arena && this.playerAlive) { ctx.textAlign = "center"; ctx.font = "700 12px Sora, system-ui, sans-serif"; ctx.fillStyle = this.skin.hot; ctx.fillText("You", px, py - prS * 2 - 8); }
 
     ctx.textAlign = "center";
     for (const tx of this.texts) {
