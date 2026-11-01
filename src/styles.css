@@ -107,6 +107,12 @@
   .cc-toast { animation: cc-toast 2.8s ease both; }
   .cc-joy-base { border-radius: 999px; background: oklch(1 0 0 / 0.06); border: 2px solid color-mix(in oklab, var(--primary) 40%, transparent); }
   .cc-joy-knob { border-radius: 999px; background: color-mix(in oklab, var(--primary) 70%, transparent); box-shadow: var(--shadow-glow); }
+  .cc-btn { height: auto; white-space: normal; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-screen, .cc-toast, .cc-highlight { animation: none; }
+  .cc-btn, .cc-progress-fill { transition: none; }
 }
 
 @keyframes cc-in { from { opacity: 0; transform: translateY(12px) scale(0.98); } to { opacity: 1; transform: none; } }
