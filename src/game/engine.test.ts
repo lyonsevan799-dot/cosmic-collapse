@@ -64,4 +64,23 @@ describe("arena simulation", () => {
     expect(engine.arena).toBe(false); expect(engine.bots).toHaveLength(0);
     expect(engine.player.mass).toBe(200); expect(engine.bodies).toHaveLength(PLAYER.density);
   });
+  it("a bot pulls nearby eligible food and gains its configured mass", () => {
+    engine.startArena(10);
+    for (const b of engine.bots) { b.x = engine.worldR * 0.8; b.y = b.id * 100; }
+    const bot = engine.bots[0]; bot.x = bot.y = 0; bot.mass = bot.disp = 10;
+    bot.tx = bot.ty = 0; bot.thinkT = 10;
+    engine.player.x = -engine.worldR * 0.8;
+    const body = engine.bodies[0]; body.x = body.y = 0; body.kind = kindAt(0); body.mass = 1;
+    engine.bodies = [body]; tick(engine, 0.25);
+    expect(body.dead).toBe(true); expect(bot.mass).toBe(11);
+  });
+  it("player absorption adds the victim mass and leaderboard rank updates", () => {
+    const onArena = vi.fn(); engine.cb.onArena = onArena; engine.startArena(10);
+    for (const b of engine.bots) { b.x = engine.worldR * 0.8; b.y = b.id * 100; b.mass = b.disp = 10; }
+    engine.player.mass = engine.player.disp = 100;
+    const victim = engine.bots[0]; victim.x = victim.y = 0;
+    tick(engine, 0.9);
+    expect(victim.alive).toBe(false); expect(engine.player.mass).toBe(110);
+    expect(onArena.mock.lastCall?.[0].rank).toBe(1);
+  });
 });

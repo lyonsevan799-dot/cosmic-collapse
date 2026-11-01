@@ -127,7 +127,7 @@ export class Engine {
     this.updateEra(true);
     for (let i = 0; i < PLAYER.density; i++) this.spawn(true);
   }
-  startDemo() { this.arena = false; this.bots = []; this.mode = "demo"; this.paused = false; this.reset(300); }
+  startDemo() { this.arena = false; this.bots = []; this.playerAlive = true; this.mode = "demo"; this.paused = false; this.reset(300); }
   startRun(mass: number) { this.arena = false; this.bots = []; this.playerAlive = true; this.mode = "play"; this.paused = false; this.reset(Math.max(PLAYER.startMass, mass)); this.emitHud(); }
   startArena(count = this.cfg.settings.botCount) {
     this.startRun(PLAYER.startMass);
@@ -391,6 +391,7 @@ export class Engine {
     const gravR = pr * PLAYER.gravityMult;
     const vr = this.viewRadius();
     const z = this.cam.zoom;
+    const botSenseRadius = this.arena ? this.bots.reduce((max, bot) => bot.alive ? Math.max(max, radiusForMass(bot.mass) * PLAYER.gravityMult) : max, 0) : 0;
     let eligibleCount = 0;
     for (const b of this.bodies) {
       b.rot += b.spin * dt;
@@ -412,7 +413,7 @@ export class Engine {
       let owner: Bot | typeof P | null = this.playerAlive ? P : null;
       if (this.arena) {
         let nearest = owner && canAbsorb(P.mass, b.kind) ? Math.hypot(P.x - b.x, P.y - b.y) / pr : Infinity;
-        const nearby: Bot[] = []; this.botGrid.query(b.x, b.y, 700, nearby);
+        const nearby: Bot[] = []; this.botGrid.query(b.x, b.y, botSenseRadius + b.r, nearby);
         for (const bot of nearby) if (bot.alive && canAbsorb(bot.mass, b.kind)) {
           const r = radiusForMass(bot.mass), d = Math.hypot(bot.x - b.x, bot.y - b.y);
           if (d < r * PLAYER.gravityMult + b.r && d / r < nearest) { owner = bot; nearest = d / r; }
@@ -620,6 +621,7 @@ export class Engine {
     ctx.setLineDash([]); ctx.globalAlpha = 1;
 
     for (const b of this.bodies) {
+      const playerEligible = canAbsorb(P.mass, b.kind);
       let bx = cx + b.x * z, by = cy + b.y * z;
       const pad = b.sprite ? b.sprite.pad : 3;
       const br = b.r * z;
@@ -627,8 +629,8 @@ export class Engine {
       let scale = 1, stretch = 0;
       const dpx = px - bx, dpy = py - by; const dd = Math.hypot(dpx, dpy) || 1;
       if (b.absorbing) { const p = Math.min(1, b.t / b.dur); scale = 1 - 0.92 * p * p; stretch = 0.6 * p; }
-      else if (b.inField && b.eligible) stretch = 0.25 * (1 - Math.min(1, dd / (gravR * z)));
-      else if (!b.eligible && dd < gravR * z * 0.9) { const k = 1 - dd / (gravR * z * 0.9); bx += Math.sin(t * 28 + b.seed) * br * 0.05 * k; by += Math.cos(t * 23 + b.seed) * br * 0.05 * k; }
+      else if (b.inField && playerEligible) stretch = 0.25 * Math.max(0, 1 - Math.min(1, dd / (gravR * z)));
+      else if (!playerEligible && dd < gravR * z * 0.9) { const k = 1 - dd / (gravR * z * 0.9); bx += Math.sin(t * 28 + b.seed) * br * 0.05 * k; by += Math.cos(t * 23 + b.seed) * br * 0.05 * k; }
       const ang = Math.atan2(dpy, dpx);
       if (!b.sprite) {
         const rr = Math.max(0.9, br * scale);
@@ -650,12 +652,12 @@ export class Engine {
         ctx.restore();
       }
       if (!b.absorbing && b.sprite) {
-        if (!b.eligible && dd < gravR * z * 1.4 + br) {
+        if (!playerEligible && dd < gravR * z * 1.4 + br) {
           const rr = br * 1.25 + 4;
           ctx.strokeStyle = "rgba(255,120,140,0.6)"; ctx.lineWidth = 1.5; ctx.setLineDash([3, 5]);
           ctx.beginPath(); ctx.arc(bx, by, rr, 0, TAU); ctx.stroke(); ctx.setLineDash([]);
           this.lock(bx + rr * 0.72, by - rr * 0.72, Math.max(7, Math.min(12, br * 0.35)));
-        } else if (b.eligible && (b.inField || (this.highlight && dd < Math.min(w, h) * 0.5))) {
+        } else if (playerEligible && (b.inField || (this.highlight && dd < Math.min(w, h) * 0.5))) {
           const pulse = this.highlight ? 0.5 + 0.5 * Math.sin(t * 6) : 0.5;
           ctx.strokeStyle = this.skin.mid; ctx.globalAlpha = 0.3 + 0.4 * pulse; ctx.lineWidth = 1.5;
           ctx.beginPath(); ctx.arc(bx, by, br * 1.2 + 3, 0, TAU); ctx.stroke(); ctx.globalAlpha = 1;
