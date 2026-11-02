@@ -376,7 +376,7 @@ function Hangar({ save, onBack, onEquip }: { save: SaveData; onBack: () => void;
           {SKINS.map((s) => {
             const o = skinOwned(save, s.id);
             return (
-              <Button variant="secondary" key={s.id} onClick={() => setSel(s.id)} className={`cc-panel cc-btn flex-col items-start gap-2 p-3 text-left ${sel === s.id ? "border-primary" : ""}`}>
+              <Button variant="secondary" key={s.id} onClick={() => setSel(s.id)} className={`cc-panel cc-btn h-auto flex-col items-start gap-2 p-3 text-left ${sel === s.id ? "border-primary" : ""}`}>
                 <div className="h-6 w-full rounded-md" style={{ background: `linear-gradient(90deg, ${s.hot}, ${s.mid}, ${s.outer})` }} />
                 <span className="text-sm">{s.name}</span>
                 <span className="text-xs font-normal text-muted-foreground">{save.skin === s.id ? "★ Equipped" : o ? "✓ Owned" : "🔒 Achievement"}</span>
