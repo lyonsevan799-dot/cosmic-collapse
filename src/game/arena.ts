@@ -15,6 +15,7 @@ export interface Bot {
   personality: Personality;
   /** Movement speed multiplier (0.8–1.15). */
   speed: number;
+  skill?: number;
   /** Seconds until the next AI decision (staggered for performance). */
   thinkT: number;
   mode: "wander" | "food" | "hunt" | "flee";
@@ -31,18 +32,45 @@ export interface Bot {
 }
 
 export const ARENA = {
-  worldRadius: 42000,
+  worldRadius: 2400,
   /** Cosmic bodies kept alive across the whole arena. */
-  density: 340,
+  density: 1000,
   respawnMin: 3,
   respawnMax: 6,
   /** A hole must be this much more massive to eat another hole. */
-  eatRatio: 1.12,
+  eatRatio: 1.4,
+  contactTime: 0.28,
+  spawnGrace: 4,
+  growthFactor: 0.4,
+  eliminationGain: 0.45,
+  dropFraction: 0.35,
+  population: 100,
   /** Food sense radius = bot radius × this. */
   senseMult: 26,
 } as const;
 
 export const BOT_COUNT_OPTIONS = [25, 50, 75, 100];
+
+/** Stable world-space speed: large holes lose only a bounded amount of agility. */
+export function movementSpeed(mass: number) {
+  return 65 * (0.7 + 0.3 / (1 + Math.log10(Math.max(10, mass) / 10) * 0.6));
+}
+
+/** Same exponential acceleration and bounded turning for every arena participant. */
+export function steer(o: { vx: number; vy: number }, x: number, y: number, speed: number, dt: number) {
+  const input = Math.min(1, Math.hypot(x, y));
+  const current = Math.hypot(o.vx, o.vy);
+  if (input < 0.03) {
+    const damping = Math.exp(-dt * 4); o.vx *= damping; o.vy *= damping; return;
+  }
+  const target = Math.atan2(y, x);
+  const angle = current > 0.1 ? Math.atan2(o.vy, o.vx) : target;
+  const delta = Math.atan2(Math.sin(target - angle), Math.cos(target - angle));
+  const turn = 3.2 * dt;
+  const heading = angle + Math.max(-turn, Math.min(turn, delta));
+  const velocity = current + (speed * input - current) * (1 - Math.exp(-dt * 3));
+  o.vx = Math.cos(heading) * velocity; o.vy = Math.sin(heading) * velocity;
+}
 
 export const PERSONALITIES: Record<
   Personality,
@@ -161,10 +189,10 @@ export interface LeaderEntry {
 }
 
 /** Top 10 by mass plus the player's overall rank. */
-export function computeLeaderboard(bots: { name: string; mass: number; alive: boolean }[], playerMass: number, playerAlive: boolean) {
+export function computeLeaderboard(bots: { name: string; mass: number; alive: boolean }[], playerMass: number, playerAlive: boolean, playerName = "You") {
   const entries: LeaderEntry[] = [];
   for (const b of bots) if (b.alive) entries.push({ name: b.name, mass: b.mass, isPlayer: false });
-  if (playerAlive) entries.push({ name: "You", mass: playerMass, isPlayer: true });
+  if (playerAlive) entries.push({ name: playerName, mass: playerMass, isPlayer: true });
   entries.sort((a, b) => b.mass - a.mass);
   const idx = entries.findIndex((e) => e.isPlayer);
   return { leaders: entries.slice(0, 10), rank: idx < 0 ? entries.length + 1 : idx + 1 };
@@ -178,7 +206,7 @@ export class SpatialGrid<T extends { x: number; y: number }> {
     return `${cx},${cy}`;
   }
   clear() {
-    for (const a of this.map.values()) a.length = 0;
+    this.map.clear();
   }
   insert(o: T) {
     const k = this.key(Math.floor(o.x / this.cell), Math.floor(o.y / this.cell));

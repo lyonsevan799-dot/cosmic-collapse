@@ -9,6 +9,7 @@
 > the editor, so keep the branch in a working state.
 <!-- LOVABLE:END -->
 
-- Keep arena simulation gated by Engine.arena and skip permanent save updates in arena mode so endless progress remains independent.
+- Present one arena gameplay mode; preserve legacy save fields while recording arena achievements and lifetime statistics so old progress survives migration.
 - Reuse the existing Canvas object physics for bots; arena helpers stay in src/game/arena.ts to keep AI rules testable without UI.
+- Share frame-rate independent steering and growth rules between human and opponents so gameplay remains fair and tunable internally.
 - Package standalone exports from a temporary Vite client entry that mounts the existing game, leaving TanStack Start routing and deployment unchanged.

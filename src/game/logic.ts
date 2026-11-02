@@ -1,12 +1,12 @@
 // Pure game rules: save validation, eligibility, achievements, number formatting. No DOM here.
 import { ACHIEVEMENTS, PLAYER, SKINS, kindAt, type Kind } from "./data";
 
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 export const SAVE_KEY = "cosmic-collapse-save";
 export const MAX_MASS = 1e300;
 
 export interface Settings { audio: boolean; sfx: number; music: number; shake: boolean; reduced: boolean; botCount: number; }
-export interface LifetimeStats { absorbed: number; planets: number; stars: number; galaxies: number; playTime: number; }
+export interface LifetimeStats { absorbed: number; planets: number; stars: number; galaxies: number; playTime: number; opponents: number; bestSurvival: number; bestRank: number; }
 export interface SaveData {
   version: number;
   bestMass: number;
@@ -17,6 +17,7 @@ export interface SaveData {
   skin: string;
   settings: Settings;
   tutorialDone: boolean;
+  playerName: string;
 }
 
 export const defaultSave = (): SaveData => ({
@@ -24,7 +25,8 @@ export const defaultSave = (): SaveData => ({
   bestMass: 0,
   runMass: 0,
   achievements: [],
-  stats: { absorbed: 0, planets: 0, stars: 0, galaxies: 0, playTime: 0 },
+  stats: { absorbed: 0, planets: 0, stars: 0, galaxies: 0, playTime: 0, opponents: 0, bestSurvival: 0, bestRank: 101 },
+  playerName: "Drifter",
   skin: "horizon",
   settings: { audio: true, sfx: 0.7, music: 0.4, shake: true, reduced: false, botCount: 100 },
   tutorialDone: false,
@@ -54,6 +56,9 @@ export function validateSave(raw: unknown): SaveData {
       stars: Math.floor(num(st.stars, 0, 0, 1e15)),
       galaxies: Math.floor(num(st.galaxies, 0, 0, 1e15)),
       playTime: num(st.playTime, 0, 0, 1e12),
+      opponents: Math.floor(num(st.opponents, 0, 0, 1e15)),
+      bestSurvival: num(st.bestSurvival, 0, 0, 1e12),
+      bestRank: Math.floor(num(st.bestRank, 101, 1, 151)),
     },
     skin: "horizon",
     settings: {
@@ -65,11 +70,16 @@ export function validateSave(raw: unknown): SaveData {
       botCount: Math.round(num(s.botCount, d.settings.botCount, 10, 150)),
     },
     tutorialDone: bool(r.tutorialDone, false),
+    playerName: normalizeName(r.playerName),
   };
   // keep any achievements implied by best mass (e.g. after a partial save)
   const fixed = unlockAchievements(out, out.bestMass);
   if (typeof r.skin === "string" && skinOwned(fixed.save, r.skin)) fixed.save.skin = r.skin;
   return fixed.save;
+}
+
+export function normalizeName(value: unknown) {
+  return typeof value === "string" ? value.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 18) || "Drifter" : "Drifter";
 }
 
 export function skinOwned(save: Pick<SaveData, "achievements">, id: string) {
