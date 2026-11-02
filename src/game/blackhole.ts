@@ -1,7 +1,18 @@
 // Black hole renderer, shared by gameplay and the hangar preview.
 import type { Skin } from "./data";
 
-function hsl(h: number, s = 90, l = 65) { return `hsl(${h % 360},${s}%,${l}%)`; }
+// Return hex so all shared renderers can safely append an alpha byte.
+function hsl(h: number, s = 90, l = 65) {
+  const hue = ((h % 360) + 360) % 360;
+  const light = l / 100;
+  const amplitude = (s / 100) * Math.min(light, 1 - light);
+  const channel = (n: number) => {
+    const k = (n + hue / 30) % 12;
+    const value = light - amplitude * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * value).toString(16).padStart(2, "0");
+  };
+  return `#${channel(0)}${channel(8)}${channel(4)}`;
+}
 
 export function skinColors(skin: Skin, t: number) {
   if (!skin.animated) return skin;

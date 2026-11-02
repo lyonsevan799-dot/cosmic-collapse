@@ -76,6 +76,7 @@ describe("arena simulation", () => {
   });
   it("player absorption adds the victim mass and leaderboard rank updates", () => {
     const onArena = vi.fn(); engine.cb.onArena = onArena; engine.startArena(10);
+    engine.bodies = [];
     for (const b of engine.bots) { b.x = engine.worldR * 0.8; b.y = b.id * 100; b.mass = b.disp = 10; }
     engine.player.mass = engine.player.disp = 100;
     const victim = engine.bots[0]; victim.x = victim.y = 0;
