@@ -46,7 +46,7 @@ export const ARENA = {
   dropFraction: 0.35,
   population: 100,
   /** Food sense radius = bot radius × this. */
-  senseMult: 26,
+  senseMult: 11,
 } as const;
 
 export const BOT_COUNT_OPTIONS = [25, 50, 75, 100];
@@ -55,6 +55,13 @@ export const BOT_COUNT_OPTIONS = [25, 50, 75, 100];
 export function movementSpeed(mass: number) {
   return 65 * (0.7 + 0.3 / (1 + Math.log10(Math.max(10, mass) / 10) * 0.6));
 }
+
+/** Shared radius-relative pace: bigger holes move proportionally slower (hole.io weight). */
+export function paceFactor(mass: number) {
+  return 0.55 / (1 + Math.log10(Math.max(1, mass / 10)) * 0.2);
+}
+
+export const BOOST = { mult: 1.65, costPerSec: 0.025, minMass: 25 } as const;
 
 /** Same exponential acceleration and bounded turning for every arena participant. */
 export function steer(o: { vx: number; vy: number }, x: number, y: number, speed: number, dt: number) {

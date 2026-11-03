@@ -4,7 +4,7 @@ import { addMass, canAbsorb, formatMass, radiusForMass, type Settings } from "./
 import { getSprite, rng, VARIANTS, type Sprite } from "./sprites";
 import { drawBlackHole } from "./blackhole";
 import { sfx } from "./audio";
-import {
+import { paceFactor, BOOST, steer,
   ARENA, PERSONALITIES, SpatialGrid, botStartMass, canEat, computeLeaderboard, decide,
   makeBotName, pickPersonality, randomSkin, spawnPosAwayFrom, type Bot, type LeaderEntry,
 } from "./arena";
@@ -49,6 +49,7 @@ export class Engine {
   cam = { x: 0, y: 0, zoom: 1 }; bgOff = { x: 0, y: 0 };
   time = 0; runTime = 0; shake = 0; flash = 0; flashColor = "#fff"; pulse = 0;
   keys = new Set<string>(); joy = { x: 0, y: 0 };
+  mouse = { x: 0, y: 0, active: false, down: false }; boostBtn = false; boosting = false; private shedT = 0;
   cfg: EngineConfig = { skin: "horizon", settings: { audio: true, sfx: 0.7, music: 0.4, shake: true, reduced: false, botCount: 100 } };
   skin: Skin = SKINS[0];
   topIdx = 0; hudT = 0; movedDist = 0; movedSent = false; pulledSent = false;
@@ -70,6 +71,9 @@ export class Engine {
     window.addEventListener("resize", this.resize);
     window.addEventListener("keydown", this.onKeyDown);
     window.addEventListener("keyup", this.onKeyUp);
+    canvas.addEventListener("pointermove", this.onPMove);
+    canvas.addEventListener("pointerdown", this.onPDown);
+    window.addEventListener("pointerup", this.onPUp);
     window.addEventListener("blur", this.onBlurEv);
     document.addEventListener("visibilitychange", this.onVis);
     this.buildStars();
@@ -83,6 +87,9 @@ export class Engine {
     window.removeEventListener("resize", this.resize);
     window.removeEventListener("keydown", this.onKeyDown);
     window.removeEventListener("keyup", this.onKeyUp);
+    this.canvas.removeEventListener("pointermove", this.onPMove);
+    this.canvas.removeEventListener("pointerdown", this.onPDown);
+    window.removeEventListener("pointerup", this.onPUp);
     window.removeEventListener("blur", this.onBlurEv);
     document.removeEventListener("visibilitychange", this.onVis);
   }
@@ -93,6 +100,11 @@ export class Engine {
   onKeyDown = (e: KeyboardEvent) => {
     const k = e.key.toLowerCase();
     if (k === "escape") { if (this.mode === "play") this.cb.onPauseRequest?.(); return; }
+    if (k === " ") {
+      const tgt = e.target as HTMLElement | null;
+      if (tgt && ["INPUT", "SELECT", "BUTTON"].includes(tgt.tagName)) return;
+      if (this.mode === "play") { e.preventDefault(); this.keys.add("space"); } return;
+    }
     if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) {
       const tgt = e.target as HTMLElement | null;
       if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "SELECT")) return;
@@ -100,10 +112,14 @@ export class Engine {
       this.keys.add(k);
     }
   };
-  onKeyUp = (e: KeyboardEvent) => { this.keys.delete(e.key.toLowerCase()); };
+  onKeyUp = (e: KeyboardEvent) => { const k = e.key.toLowerCase(); this.keys.delete(k === " " ? "space" : k); };
+  onPMove = (e: PointerEvent) => { if (e.pointerType !== "mouse") return; this.mouse.x = e.clientX; this.mouse.y = e.clientY; this.mouse.active = true; };
+  onPDown = (e: PointerEvent) => { if (e.pointerType !== "mouse") return; this.onPMove(e); this.mouse.down = true; };
+  onPUp = () => { this.mouse.down = false; };
+  setBoost(on: boolean) { this.boostBtn = on; }
   onBlurEv = () => { this.resetInput(); if (this.mode === "play" && !this.paused) this.cb.onBlur?.(); };
   onVis = () => { if (document.hidden) this.onBlurEv(); };
-  resetInput() { this.keys.clear(); this.joy.x = 0; this.joy.y = 0; }
+  resetInput() { this.keys.clear(); this.joy.x = 0; this.joy.y = 0; this.mouse.down = false; this.mouse.active = false; this.boostBtn = false; this.boosting = false; }
   setJoystick(x: number, y: number) { this.joy.x = x; this.joy.y = y; }
 
   resize = () => {
@@ -295,9 +311,9 @@ export class Engine {
       }
       const dx = bot.tx - bot.x, dy = bot.ty - bot.y, d = Math.hypot(dx, dy) || 1;
       const a = Math.atan2(dy, dx) + Math.sin(this.time * 1.4 + bot.wob) * 0.12;
-      const speed = PLAYER.speedPerRadius * r * bot.speed * Math.min(1, d / (r * 3));
-      const f = 1 - Math.exp(-dt * PLAYER.accel);
-      bot.vx += (Math.cos(a) * speed - bot.vx) * f; bot.vy += (Math.sin(a) * speed - bot.vy) * f;
+      const speed = PLAYER.speedPerRadius * r * paceFactor(bot.disp) * Math.min(0.95, bot.speed);
+      const inp = Math.min(1, d / (r * 3));
+      steer(bot, Math.cos(a) * inp, Math.sin(a) * inp, speed, dt);
       bot.x += bot.vx * dt; bot.y += bot.vy * dt; this.clampToArena(bot);
       bot.disp = Math.exp(Math.log(bot.disp) + (Math.log(bot.mass) - Math.log(bot.disp)) * (1 - Math.exp(-dt * 4)));
       const nearby: Bot[] = []; this.botGrid.query(bot.x, bot.y, r * 3, nearby);
@@ -360,6 +376,12 @@ export class Engine {
       if (this.keys.has("w") || this.keys.has("arrowup")) iy -= 1;
       if (this.keys.has("s") || this.keys.has("arrowdown")) iy += 1;
       ix += this.joy.x; iy += this.joy.y;
+      if (ix === 0 && iy === 0 && this.mouse.active) {
+        // slither.io style: head toward the cursor, full speed once it is a little away from the centre
+        const mx = this.mouse.x - this.w / 2, my = this.mouse.y - this.h / 2, md = Math.hypot(mx, my);
+        const full = Math.min(this.w, this.h) * 0.18;
+        if (md > 6) { const k = Math.min(1, md / full) / md; ix = mx * k; iy = my * k; }
+      }
     } else if (!playing) {
       this.demoDir += (Math.sin(this.time * 0.37) * 0.6 + Math.sin(this.time * 0.13)) * dt;
       ix = Math.cos(this.demoDir) * 0.55; iy = Math.sin(this.demoDir) * 0.55;
@@ -369,10 +391,21 @@ export class Engine {
     const lg = Math.log(Math.max(1, P.disp)), lt = Math.log(Math.max(1, P.mass));
     P.disp = Math.exp(lg + (lt - lg) * (1 - Math.exp(-dt * 4)));
     const pr = radiusForMass(P.disp);
-    const maxSpeed = PLAYER.speedPerRadius * pr * (this.screenRadius(P.disp) > 0 ? 1 : 1);
-    const rate = il > 0.05 ? PLAYER.accel : PLAYER.decel;
-    const f = 1 - Math.exp(-dt * rate);
-    P.vx += (ix * maxSpeed - P.vx) * f; P.vy += (iy * maxSpeed - P.vy) * f;
+    const wantBoost = playing && this.playerAlive && (this.keys.has("space") || this.mouse.down || this.boostBtn) && Math.hypot(ix, iy) > 0.05;
+    this.boosting = wantBoost && P.mass > BOOST.minMass;
+    const maxSpeed = PLAYER.speedPerRadius * pr * paceFactor(P.disp) * (this.boosting ? BOOST.mult : 1);
+    if (this.boosting) {
+      // boosting burns mass, shed as a glowing trail (slither.io)
+      P.mass = Math.max(BOOST.minMass, P.mass * (1 - BOOST.costPerSec * dt));
+      this.shedT -= dt;
+      if (this.shedT <= 0) { this.shedT = 0.05; this.emit(P.x - P.vx * 0.05, P.y - P.vy * 0.05, 2, this.skin.glow, pr * this.cam.zoom * 0.18, 30); }
+    }
+    if (this.arena) steer(P, ix, iy, maxSpeed, dt);
+    else {
+      const rate = il > 0.05 ? PLAYER.accel : PLAYER.decel;
+      const f = 1 - Math.exp(-dt * rate);
+      P.vx += (ix * maxSpeed - P.vx) * f; P.vy += (iy * maxSpeed - P.vy) * f;
+    }
     P.x += P.vx * dt; P.y += P.vy * dt;
     if (this.arena) { this.clampToArena(P); this.updateBots(dt); }
     if (playing && !this.movedSent) {
