@@ -14,7 +14,7 @@ type Screen = "menu" | "arena-setup" | "eliminated" | "play" | "achievements" | 
 interface Confirm { title: string; body: string; yes: string; onYes: () => void; }
 
 const TUTORIAL = [
-  "Move with WASD or the arrow keys.",
+  "Steer with your mouse or WASD. Hold click or Space to boost.",
   "Look for objects small enough to absorb — they glow with a ring.",
   "Nearby objects are pulled toward your event horizon.",
   "Every absorption adds mass. Locked objects show a padlock.",
