@@ -14,7 +14,7 @@ type Screen = "menu" | "arena-setup" | "eliminated" | "play" | "achievements" | 
 interface Confirm { title: string; body: string; yes: string; onYes: () => void; }
 
 const TUTORIAL = [
-  "Move with WASD or the arrow keys.",
+  "Steer with your mouse or WASD. Hold click or Space to boost.",
   "Look for objects small enough to absorb — they glow with a ring.",
   "Nearby objects are pulled toward your event horizon.",
   "Every absorption adds mass. Locked objects show a padlock.",
@@ -170,7 +170,7 @@ export default function CosmicCollapse() {
               <Button variant="secondary" className="cc-btn" onClick={() => { click(); setScreen("hangar"); }}>Skins</Button>
               <Button variant="secondary" className="cc-btn" onClick={() => { click(); setSettingsFrom("menu"); setScreen("settings"); }}>Settings</Button>
             </div>
-            <p className="mt-2 text-center text-xs text-muted-foreground">WASD / arrows to move · Esc to pause · touch joystick on mobile</p>
+            <p className="mt-2 text-center text-xs text-muted-foreground">Steer with your mouse or WASD · Hold click or Space to boost · Esc to pause</p>
           </div>
         </div>
       )}
@@ -283,6 +283,11 @@ export default function CosmicCollapse() {
           )}
 
           {coarse && !paused && <Joystick onMove={moveJoystick} />}
+          {coarse && !paused && (
+            <button type="button" aria-label="Boost" className="cc-joy-base absolute bottom-10 right-8 z-20 flex h-24 w-24 items-center justify-center text-xs font-semibold text-foreground" style={{ touchAction: "none" }}
+              onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); engineRef.current?.setBoost(true); }}
+              onPointerUp={() => engineRef.current?.setBoost(false)} onPointerCancel={() => engineRef.current?.setBoost(false)} onLostPointerCapture={() => engineRef.current?.setBoost(false)}>BOOST</button>
+          )}
 
           {paused && !confirm && (
             <Overlay>
