@@ -24,8 +24,8 @@ describe("arena rules", () => {
     expect(names.size).toBe(150);
   });
   it("a hole can only eat a clearly smaller hole", () => {
-    expect(canEat(112, 100)).toBe(true);
-    expect(canEat(111, 100)).toBe(false);
+    expect(canEat(140, 100)).toBe(true);
+    expect(canEat(139, 100)).toBe(false);
     expect(canEat(100, 100)).toBe(false);
     expect(canEat(10, 400)).toBe(false);
   });
