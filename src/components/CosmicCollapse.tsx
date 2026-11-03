@@ -163,9 +163,7 @@ export default function CosmicCollapse() {
             <p className="mt-3 text-sm text-muted-foreground sm:text-base">Begin as a speck. Never stop growing.</p>
           </div>
           <div className="flex w-full max-w-md flex-col gap-2">
-            {save.runMass > PLAYER.startMass && <Button variant="secondary" className="cc-btn cc-btn-primary py-4 text-base" onClick={() => { click(); startRun(saveRef.current.runMass); }}>Continue · {formatMass(save.runMass)} mass</Button>}
-            <Button variant="secondary" className={`cc-btn py-4 text-base ${save.runMass > PLAYER.startMass ? "" : "cc-btn-primary"}`} onClick={() => { click(); newGame(); }}>{save.runMass > PLAYER.startMass ? "New Game" : "Play"}</Button>
-            <Button variant="secondary" className="cc-btn cc-btn-accent h-auto py-3" onClick={() => { click(); setScreen("arena-setup"); }}>AI Arena</Button>
+            <Button variant="secondary" className="cc-btn cc-btn-primary py-4 text-base" onClick={() => { click(); startArena(); }}>Play</Button>
             <div className="grid grid-cols-2 gap-2">
               <Button variant="secondary" className="cc-btn" onClick={() => { click(); setScreen("achievements"); }}>Achievements</Button>
               <Button variant="secondary" className="cc-btn" onClick={() => { click(); setScreen("stats"); }}>Statistics</Button>
