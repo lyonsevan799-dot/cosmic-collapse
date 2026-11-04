@@ -177,8 +177,8 @@ export default function CosmicCollapse() {
 
       {screen === "arena-setup" && (
         <Overlay>
-          <h2 className="cc-title mb-2 text-3xl">AI Arena</h2>
-          <p className="mb-5 text-sm text-muted-foreground">Local AI opponents · no online players</p>
+          <h2 className="cc-title mb-2 text-3xl">Arena</h2>
+          <p className="mb-5 text-sm text-muted-foreground">Compete against 100 rivals</p>
           <fieldset className="mb-6 w-full"><legend className="mb-2 text-sm">Opponents</legend>
             <div className="grid grid-cols-4 gap-2">{BOT_COUNT_OPTIONS.map((count) => (
               <Button key={count} variant={save.settings.botCount === count ? "default" : "secondary"} aria-pressed={save.settings.botCount === count}
@@ -248,7 +248,7 @@ export default function CosmicCollapse() {
             <div className="cc-panel px-4 py-2">
               <div className="text-[10px] uppercase tracking-widest text-muted-foreground">Mass</div>
               <div className="font-display text-2xl text-primary sm:text-3xl">{formatMass(hud.mass)}</div>
-              <div className="text-[11px] text-muted-foreground">{arenaMode ? `${arenaState.alive} in arena · AI bots` : `Best ${formatMass(best)}`}</div>
+              <div className="text-[11px] text-muted-foreground">{arenaMode ? `${arenaState.alive} in arena` : `Best ${formatMass(best)}`}</div>
             </div>
             {!arenaMode && <div className="cc-panel order-3 w-full px-3 py-2 sm:order-none sm:w-auto sm:min-w-[300px]">
               {next ? (<>
