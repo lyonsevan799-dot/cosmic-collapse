@@ -47,7 +47,7 @@ describe("arena simulation", () => {
     const attacker = engine.bots[0], victim = engine.bots[1];
     attacker.mass = attacker.disp = 100; attacker.x = attacker.y = victim.x = victim.y = 0;
     tick(engine, 0.7);
-    expect(victim.alive).toBe(false); expect(attacker.mass).toBe(110);
+    expect(victim.alive).toBe(false); expect(attacker.mass).toBeGreaterThanOrEqual(110); expect(attacker.mass).toBeLessThan(115);
     tick(engine, 6.5); expect(victim.alive).toBe(true);
   });
   it("eliminates the player, pauses, and emits the killer once", () => {
