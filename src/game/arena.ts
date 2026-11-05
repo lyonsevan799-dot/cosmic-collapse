@@ -133,6 +133,7 @@ export function spawnPosAwayFrom(rand: () => number, px: number, py: number, min
   const finite = (n: number, fallback = 0) => Number.isFinite(n) ? n : fallback;
   px = finite(px); py = finite(py);
   const radius = Math.max(0, finite(worldR) - Math.max(0, finite(opponentRadius)) - Math.max(0, finite(margin)));
+  if (radius === 0) return { x: 0, y: 0 };
   const distance = Math.hypot(px, py);
   const required = Math.min(Math.max(0, finite(minDist, distance + radius)), distance + radius);
   const sample = () => Math.max(0, Math.min(1, finite(rand(), 0.5)));
