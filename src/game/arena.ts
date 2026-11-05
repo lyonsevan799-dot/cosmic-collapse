@@ -144,8 +144,8 @@ export function spawnPosAwayFrom(rand: () => number, px: number, py: number, min
     // Prefer the player's opposite hemisphere when there is room to choose.
     if (Math.hypot(x - px, y - py) >= required && (distance === 0 || x * px + y * py <= 0)) return { x, y };
   }
-  if (distance > 0) return { x: -(px / distance) * radius, y: -(py / distance) * radius };
-  return { x: -radius, y: 0 };
+  if (distance > 0) return { x: -(px / distance) * radius || 0, y: -(py / distance) * radius || 0 };
+  return { x: -radius || 0, y: 0 };
 }
 
 export interface BotSenses {

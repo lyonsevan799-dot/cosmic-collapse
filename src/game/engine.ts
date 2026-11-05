@@ -240,6 +240,7 @@ export class Engine {
     const body = this.bodies[this.bodies.length - 1];
     if (!body) return;
     if (nearPlayer) {
+      if (Math.hypot(body.x, body.y) <= this.worldR * 0.97) return;
       const pos = spawnPosAwayFrom(Math.random, this.player.x, this.player.y,
         radiusForMass(this.player.mass) * 4 + body.r, this.worldR * 0.97);
       body.x = pos.x; body.y = pos.y;
