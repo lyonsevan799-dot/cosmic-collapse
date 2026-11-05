@@ -22,7 +22,17 @@ export function skinColors(skin: Skin, t: number) {
 
 /** Draw at screen position (x,y), r = event-horizon radius in px. */
 export function drawBlackHole(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, t: number, skinIn: Skin, reduced: boolean, pulse = 0) {
+  if (![x, y, r, t, pulse].every(Number.isFinite) || r <= 0) return;
+  pulse = Math.max(0, pulse);
   const skin = skinColors(skinIn, t);
+  if (r < 1.5) {
+    ctx.fillStyle = skin.glow; ctx.globalAlpha = 0.3;
+    ctx.beginPath(); ctx.arc(x, y, 2.5, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = skin.hot; ctx.globalAlpha = 0.95;
+    ctx.beginPath(); ctx.arc(x, y, 0.9, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+    return;
+  }
   const TILT = -0.22, FLAT = 0.34;
   // halo
   const halo = ctx.createRadialGradient(x, y, r * 0.9, x, y, r * (3.4 + pulse));
@@ -57,7 +67,7 @@ export function drawBlackHole(ctx: CanvasRenderingContext2D, x: number, y: numbe
   ctx.beginPath(); ctx.ellipse(x, y, r * 1.22, r * 1.12, TILT, Math.PI * 1.05, Math.PI * 1.95); ctx.stroke();
   ctx.globalAlpha = 1;
   // horizon
-  const h = ctx.createRadialGradient(x, y, 0, x, y, r);
+  const h = ctx.createRadialGradient(x, y, 0.001, x, y, r);
   h.addColorStop(0, "#000000"); h.addColorStop(0.85, "#020008"); h.addColorStop(1, "#0b0420");
   ctx.fillStyle = h; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
   // photon ring

@@ -47,7 +47,15 @@ describe("arena rules", () => {
     const pos = spawnPosAwayFrom(() => 0, 950, 0, 900, 1000);
     expect(Math.hypot(pos.x, pos.y)).toBeLessThanOrEqual(1000);
     expect(Math.hypot(pos.x - 950, pos.y)).toBeGreaterThanOrEqual(900);
-    expect(() => spawnPosAwayFrom(() => 0, 0, 0, 1100, 1000)).toThrow(RangeError);
+    expect(spawnPosAwayFrom(() => 0, 0, 0, 1100, 1000)).toEqual({ x: -1000, y: 0 });
+  });
+  it("insets respawns for opponent radius and safety margin at the player boundary", () => {
+    const pos = spawnPosAwayFrom(() => 0, 1000, 0, 1e9, 1000, 40, 24);
+    expect(pos).toEqual({ x: -936, y: 0 });
+    expect(Math.hypot(pos.x, pos.y) + 40 + 24).toBeLessThanOrEqual(1000);
+  });
+  it("returns finite valid spawns for degenerate geometry and invalid input", () => {
+    expect(spawnPosAwayFrom(() => NaN, NaN, Infinity, Infinity, 1000, 2000)).toEqual({ x: 0, y: 0 });
   });
   it("leaderboard is sorted, top 10, with accurate player rank", () => {
     const bots = Array.from({ length: 12 }, (_, i) => ({ name: `B${i}`, mass: (i + 1) * 100, alive: true }));
