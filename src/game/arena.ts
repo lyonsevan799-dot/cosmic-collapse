@@ -128,19 +128,25 @@ export function canEat(attackerMass: number, victimMass: number): boolean {
   return attackerMass / victimMass >= ARENA.eatRatio;
 }
 
-/** Random point in the world disc, at least minDist away from (px, py). */
-export function spawnPosAwayFrom(rand: () => number, px: number, py: number, minDist: number, worldR: number) {
+/** Best valid spawn in an inset disc, even when complete separation is impossible. */
+export function spawnPosAwayFrom(rand: () => number, px: number, py: number, minDist: number, worldR: number, opponentRadius = 0, margin = 0) {
+  const finite = (n: number, fallback = 0) => Number.isFinite(n) ? n : fallback;
+  px = finite(px); py = finite(py);
+  const radius = Math.max(0, finite(worldR) - Math.max(0, finite(opponentRadius)) - Math.max(0, finite(margin)));
+  if (radius === 0) return { x: 0, y: 0 };
+  const distance = Math.hypot(px, py);
+  const required = Math.min(Math.max(0, finite(minDist, distance + radius)), distance + radius);
+  const sample = () => Math.max(0, Math.min(1, finite(rand(), 0.5)));
   for (let i = 0; i < 24; i++) {
-    const a = rand() * Math.PI * 2;
-    const d = Math.sqrt(rand()) * worldR;
+    const a = sample() * Math.PI * 2;
+    const d = Math.sqrt(sample()) * radius;
     const x = Math.cos(a) * d;
     const y = Math.sin(a) * d;
-    if (Math.hypot(x - px, y - py) >= minDist) return { x, y };
+    // Prefer the player's opposite hemisphere when there is room to choose.
+    if (Math.hypot(x - px, y - py) >= required && (distance === 0 || x * px + y * py <= 0)) return { x, y };
   }
-  const distance = Math.hypot(px, py);
-  if (minDist > distance + worldR) throw new RangeError("No safe spawn fits inside the arena");
-  const a = distance > 0 ? Math.atan2(py, px) + Math.PI : rand() * Math.PI * 2;
-  return { x: Math.cos(a) * worldR, y: Math.sin(a) * worldR };
+  if (distance > 0) return { x: -(px / distance) * radius || 0, y: -(py / distance) * radius || 0 };
+  return { x: -radius || 0, y: 0 };
 }
 
 export interface BotSenses {
@@ -223,10 +229,19 @@ export class SpatialGrid<T extends { x: number; y: number }> {
   }
   /** Append all objects in cells overlapping the square (x±r, y±r) to `out`. */
   query(x: number, y: number, r: number, out: T[]) {
+    if (![x, y, r].every(Number.isFinite) || r < 0) return;
     const x0 = Math.floor((x - r) / this.cell);
     const x1 = Math.floor((x + r) / this.cell);
     const y0 = Math.floor((y - r) / this.cell);
     const y1 = Math.floor((y + r) / this.cell);
+    // Huge holes can sense the entire world: don't iterate billions of empty cells.
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > this.map.size) {
+      for (const [key, objects] of this.map) {
+        const [cx, cy] = key.split(",").map(Number);
+        if (cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1) out.push(...objects);
+      }
+      return out;
+    }
     for (let cx = x0; cx <= x1; cx++)
       for (let cy = y0; cy <= y1; cy++) {
         const a = this.map.get(this.key(cx, cy));

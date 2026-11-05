@@ -13,3 +13,4 @@
 - Reuse the existing Canvas object physics for bots; arena helpers stay in src/game/arena.ts to keep AI rules testable without UI.
 - Share frame-rate independent steering and growth rules between human and opponents so gameplay remains fair and tunable internally.
 - Package standalone exports from a temporary Vite client entry that mounts the existing game, leaving TanStack Start routing and deployment unchanged.
+- Keep respawn geometry and sparse-grid bounds in pure arena helpers; use asymptotic camera zoom and guarded rendering so late-game stability never depends on reducing player mass.

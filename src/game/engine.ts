@@ -152,7 +152,7 @@ export class Engine {
     const used = new Set<string>();
     this.bots = Array.from({ length: Math.max(10, Math.min(150, Math.round(count))) }, (_, id) => {
       const mass = botStartMass(Math.random, PLAYER.startMass);
-      const pos = spawnPosAwayFrom(Math.random, 0, 0, this.viewRadius() * 0.55, this.worldR * 0.9);
+      const pos = spawnPosAwayFrom(Math.random, 0, 0, this.viewRadius() * 0.55, this.worldR, radiusForMass(mass), 24);
       return { id, name: makeBotName(Math.random, used), skin: randomSkin(Math.random), ...pos,
         vx: 0, vy: 0, mass, disp: mass, personality: pickPersonality(Math.random),
         speed: 0.8 + Math.random() * 0.35, thinkT: Math.random() * 0.4, mode: "wander" as const,
@@ -171,7 +171,12 @@ export class Engine {
     const g = 1 - Math.exp(-Math.log10(Math.max(1, mass / PLAYER.startMass)) / 4);
     return Math.min(this.w, this.h) * (0.035 + 0.05 * g);
   }
-  zoomFor(mass: number) { return this.screenRadius(mass) / radiusForMass(mass); }
+  zoomFor(mass: number) {
+    const normal = this.screenRadius(mass) / radiusForMass(mass);
+    const minimum = Math.max(1, Math.min(this.w, this.h)) / (ARENA.worldRadius * 6);
+    // Smooth asymptote: normal early zoom, diminishing zoom-out at enormous sizes.
+    return Math.hypot(normal, minimum);
+  }
   viewRadius() { return Math.hypot(this.w, this.h) / 2 / this.cam.zoom; }
 
   private updateEra(force = false) {
@@ -233,7 +238,14 @@ export class Engine {
     this.topIdx = nearPlayer ? oldTop : topEligibleIndex(bot?.mass ?? this.player.mass);
     this.spawn(true, true); this.topIdx = oldTop;
     const body = this.bodies[this.bodies.length - 1];
-    if (!body || nearPlayer) return;
+    if (!body) return;
+    if (nearPlayer) {
+      if (Math.hypot(body.x, body.y) <= this.worldR * 0.97) return;
+      const pos = spawnPosAwayFrom(Math.random, this.player.x, this.player.y,
+        radiusForMass(this.player.mass) * 4 + body.r, this.worldR * 0.97);
+      body.x = pos.x; body.y = pos.y;
+      return;
+    }
     const a = Math.random() * TAU, d = Math.sqrt(Math.random()) * this.worldR * 0.97;
     body.x = Math.cos(a) * d; body.y = Math.sin(a) * d;
   }
@@ -259,6 +271,13 @@ export class Engine {
   private updateBots(dt: number) {
     const P = this.player;
     this.botGrid.clear(); this.foodGrid.clear();
+    for (const bot of this.bots) {
+      if (![bot.x, bot.y, bot.vx, bot.vy, bot.mass, bot.disp, bot.tx, bot.ty, bot.respawnT, bot.dieT, bot.dieDur, bot.thinkT, bot.speed, bot.wob].every(Number.isFinite) || bot.mass <= 0 || bot.disp <= 0 || bot.dieDur <= 0) {
+        if (import.meta.env.DEV) console.warn("Recovering invalid arena opponent", bot.id);
+        Object.assign(bot, { x: 0, y: 0, vx: 0, vy: 0, mass: PLAYER.startMass, disp: PLAYER.startMass,
+          tx: 0, ty: 0, alive: false, dying: false, eater: null, respawnT: 0, dieT: 0, dieDur: 0.6, thinkT: 0, speed: 0.8, wob: 0 });
+      }
+    }
     for (const b of this.bots) if (b.alive) this.botGrid.insert(b);
     for (const b of this.bodies) if (!b.dead && !b.absorbing) this.foodGrid.insert(b);
     for (const bot of this.bots) {
@@ -280,9 +299,13 @@ export class Engine {
       if (!bot.alive) {
         bot.respawnT -= dt;
         if (bot.respawnT <= 0) {
-          Object.assign(bot, spawnPosAwayFrom(Math.random, P.x, P.y, this.viewRadius() * 0.7, this.worldR * 0.9));
           bot.mass = bot.disp = botStartMass(Math.random, PLAYER.startMass);
+          const radius = radiusForMass(bot.mass);
+          const pos = spawnPosAwayFrom(Math.random, P.x, P.y,
+            Math.max(this.viewRadius() * 0.7, radiusForMass(P.mass) + radius + 24), this.worldR, radius, 24);
+          Object.assign(bot, pos);
           bot.vx = bot.vy = 0; bot.alive = true; bot.thinkT = 0; bot.mode = "wander";
+          bot.tx = pos.x; bot.ty = pos.y; bot.foodRef = null;
         }
         continue;
       }
@@ -343,11 +366,13 @@ export class Engine {
   // ---------- loop ----------
   loop = (now: number) => {
     if (this.destroyed) return;
+    // Schedule first: a recoverable entity failure cannot stop future frames.
+    // Unrelated programming errors still surface normally; no blanket catch.
+    this.raf = requestAnimationFrame(this.loop);
     const dt = Math.min(1 / 30, Math.max(0, (now - this.last) / 1000));
     this.last = now;
     if (!this.paused) this.update(dt);
     this.render();
-    this.raf = requestAnimationFrame(this.loop);
   };
 
   /** Keep coordinates near the origin so precision holds at any scale. */
@@ -427,6 +452,10 @@ export class Engine {
     const botSenseRadius = this.arena ? this.bots.reduce((max, bot) => bot.alive ? Math.max(max, radiusForMass(bot.mass) * PLAYER.gravityMult) : max, 0) : 0;
     let eligibleCount = 0;
     for (const b of this.bodies) {
+      if (![b.x, b.y, b.vx, b.vy, b.r, b.mass, b.rot, b.spin, b.t, b.dur].every(Number.isFinite) || b.r <= 0 || b.mass <= 0 || b.dur <= 0) {
+        if (import.meta.env.DEV) console.warn("Replacing invalid cosmic object", b.seed);
+        b.dead = true; continue;
+      }
       b.rot += b.spin * dt;
       if (b.absorbing) {
         if (b.absorber && !b.absorber.alive) { b.absorbing = false; b.absorber = null; b.vx = b.vy = 0; continue; }
@@ -658,6 +687,7 @@ export class Engine {
       let bx = cx + b.x * z, by = cy + b.y * z;
       const pad = b.sprite ? b.sprite.pad : 3;
       const br = b.r * z;
+      if (![bx, by, br].every(Number.isFinite) || br <= 0) continue;
       if (bx < -br * pad || bx > w + br * pad || by < -br * pad || by > h + br * pad) continue;
       let scale = 1, stretch = 0;
       const dpx = px - bx, dpy = py - by; const dd = Math.hypot(dpx, dpy) || 1;
@@ -703,12 +733,14 @@ export class Engine {
 
     for (const r of this.rings) {
       const p = r.life / r.dur; const rad = (r.r + (r.max - r.r) * (1 - Math.pow(1 - p, 3))) * z;
+      if (![r.x, r.y, rad, p].every(Number.isFinite) || rad <= 0) continue;
       ctx.strokeStyle = r.color; ctx.globalAlpha = (1 - p) * 0.8; ctx.lineWidth = r.width * (1 - p) + 0.5;
       ctx.beginPath(); ctx.arc(cx + r.x * z, cy + r.y * z, rad, 0, TAU); ctx.stroke();
     }
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = "lighter";
     for (const p of this.particles) {
+      if (![p.x, p.y, p.life, p.max, p.size].every(Number.isFinite) || p.max <= 0 || p.size <= 0) continue;
       ctx.globalAlpha = p.life / p.max; ctx.fillStyle = p.color;
       ctx.beginPath(); ctx.arc(cx + p.x * z, cy + p.y * z, Math.max(0.6, p.size), 0, TAU); ctx.fill();
     }
@@ -765,6 +797,7 @@ export class Engine {
   }
 
   private starFx(b: Body, R: number, t: number) {
+    if (!Number.isFinite(R) || R <= 0 || !Number.isFinite(t)) return;
     const ctx = this.ctx;
     if (b.kind.style === "star") {
       const tint = b.sprite?.tint ?? this.skin.mid;
