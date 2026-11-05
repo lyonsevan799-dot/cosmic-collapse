@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Engine } from "./engine";
 import { PLAYER, kindAt } from "./data";
+import { ARENA } from "./arena";
+import { radiusForMass } from "./logic";
 
 vi.mock("./audio", () => ({ sfx: { absorbSmall: vi.fn(), absorbPlanet: vi.fn(), absorbStar: vi.fn() } }));
 vi.mock("./sprites", () => ({ getSprite: () => null, VARIANTS: 4, rng: () => () => 0.5 }));
@@ -18,6 +20,53 @@ beforeEach(() => {
 afterEach(() => { engine.destroy(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("arena simulation", () => {
+  it.each([10000, 50000, 100000, 150000, 200000, 500000, 1e6, 1e7, 1e8, 1e9])("keeps respawning, collecting and rendering at %s mass", (mass) => {
+    engine.startArena(10);
+    engine.player.mass = engine.player.disp = mass;
+    engine.cam.zoom = engine.zoomFor(mass);
+    engine.player.x = engine.worldR;
+    const bot = engine.bots[0]; bot.alive = false; bot.dying = false; bot.respawnT = 0;
+    const body = engine.bodies[0]; body.kind = kindAt(0); body.mass = 1;
+    body.absorbing = true; body.absorber = null; body.t = body.dur;
+    engine.bodies = [body];
+    const hud = vi.fn(); engine.cb.onArena = hud;
+    tick(engine, 1 / 60);
+    expect(bot.alive).toBe(true);
+    expect(Math.hypot(bot.x, bot.y) + radiusForMass(bot.mass) + 24).toBeLessThanOrEqual(engine.worldR + 1e-6);
+    expect(engine.player.mass).toBe(mass + 1);
+    expect(engine.cam.zoom).toBeGreaterThanOrEqual(Math.min(engine.w, engine.h) / (ARENA.worldRadius * 6));
+    expect(hud.mock.lastCall?.[0].rank).toBe(1);
+    expect(() => engine.render()).not.toThrow();
+    const before = engine.time; tick(engine, 0.1); expect(engine.time).toBeGreaterThan(before);
+    expect(engine.bodies.every(b => Number.isFinite(b.x) && Number.isFinite(b.y))).toBe(true);
+  });
+  it("smoothly approaches the zoom floor without capping mass or visually shrinking huge holes", () => {
+    const masses = [1e4, 1e5, 1e6, 1e7, 1e8, 1e9];
+    const zooms = masses.map(m => engine.zoomFor(m));
+    for (let i = 1; i < masses.length; i++) {
+      expect(zooms[i]).toBeLessThan(zooms[i - 1]);
+      expect(radiusForMass(masses[i]) * zooms[i]).toBeGreaterThan(radiusForMass(masses[i - 1]) * zooms[i - 1]);
+    }
+    engine.startArena(10); engine.player.mass = 1e9;
+    const before = engine.cam.zoom; tick(engine, 1 / 60);
+    expect(engine.cam.zoom).toBeLessThan(before);
+    expect(engine.cam.zoom).toBeGreaterThan(engine.zoomFor(engine.player.disp));
+  });
+  it("recovers invalid opponents without changing player mass or blocking later opponents", () => {
+    engine.startArena(10); engine.player.mass = engine.player.disp = 1e6;
+    engine.bots[0].x = NaN; engine.bots[0].mass = Infinity;
+    const other = engine.bots[1]; other.alive = false; other.respawnT = 0;
+    tick(engine, 1 / 60);
+    expect(engine.bots[0].alive).toBe(true); expect(other.alive).toBe(true);
+    expect(Number.isFinite(engine.bots[0].mass)).toBe(true);
+    expect(engine.player.mass).toBe(1e6);
+  });
+  it("schedules the next frame while still surfacing unrelated programming errors", () => {
+    const scheduled = vi.fn(() => 1); vi.stubGlobal("requestAnimationFrame", scheduled);
+    vi.spyOn(engine, "render").mockImplementation(() => { throw new Error("Unrelated bug"); });
+    expect(() => engine.loop(performance.now())).toThrow("Unrelated bug");
+    expect(scheduled).toHaveBeenCalledWith(engine.loop);
+  });
   it("starts with 100 distinct AI opponents plus the player", () => {
     const onArena = vi.fn(); engine.cb.onArena = onArena; engine.startArena();
     expect(engine.bots).toHaveLength(100);

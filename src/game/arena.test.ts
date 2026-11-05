@@ -103,4 +103,11 @@ describe("arena rules", () => {
     grid.query(0, 0, 150, out as { x: number; y: number; id: number }[]);
     expect(out.map((o) => o.id)).toEqual([1]);
   });
+  it("queries enormous sense radii through occupied cells, not empty space", () => {
+    const grid = new SpatialGrid<{ x: number; y: number }>(240);
+    grid.insert({ x: 0, y: 0 }); grid.insert({ x: 1000, y: -1000 });
+    const out: { x: number; y: number }[] = [];
+    grid.query(0, 0, 1e100, out);
+    expect(out).toHaveLength(2);
+  });
 });
