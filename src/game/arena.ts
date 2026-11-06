@@ -29,6 +29,8 @@ export interface Bot {
   eater: Bot | "player" | null;
   /** Wobble phase for organic movement. */
   wob: number;
+  /** Core-strike ability state. */
+  strike: StrikeState;
 }
 
 export const ARENA = {
@@ -65,6 +67,73 @@ export function paceFactor(mass: number) {
 export const MAX_SPEED = 95;
 
 export const BOOST = { mult: 1.65, costPerSec: 0.025, minMass: 25 } as const;
+
+// ---------- core strike: skill-based combat that lets small holes beat big ones ----------
+export const STRIKE = {
+  /** Telegraphed wind-up; the attacker is slowed and glows. */
+  charge: 0.55,
+  /** Lunge window in which the strike can connect. */
+  active: 0.3,
+  cooldown: 6,
+  /** A missed strike leaves the attacker eatable by anyone for this long. */
+  vulnerable: 1.4,
+  /** Hit when the attacker's centre reaches this fraction of the defender's radius. */
+  coreFrac: 0.5,
+  /** Lunge speed multiplier during the active window. */
+  lungeMult: 2.1,
+  /** Repeat eliminations of the same victim within this many seconds pay half. */
+  farmWindow: 45,
+} as const;
+
+export type StrikePhase = "ready" | "charge" | "active" | "cooldown";
+export interface StrikeState { phase: StrikePhase; t: number; cd: number; vuln: number; dirX: number; dirY: number; }
+export const newStrike = (): StrikeState => ({ phase: "ready", t: 0, cd: 0, vuln: 0, dirX: 1, dirY: 0 });
+
+/** Begin the charge-up if the ability is ready and the attacker is not vulnerable. */
+export function tryStrike(s: StrikeState, dirX: number, dirY: number): boolean {
+  if (s.phase !== "ready" || s.vuln > 0) return false;
+  const d = Math.hypot(dirX, dirY);
+  if (d > 0.1) { s.dirX = dirX / d; s.dirY = dirY / d; }
+  s.phase = "charge"; s.t = 0;
+  return true;
+}
+
+/** Advance the strike machine. Returns "fired" when the lunge begins, "whiffed" when a miss ends. */
+export function tickStrike(s: StrikeState, dt: number): "fired" | "whiffed" | null {
+  s.cd = Math.max(0, s.cd - dt);
+  s.vuln = Math.max(0, s.vuln - dt);
+  if (s.phase === "ready") return null;
+  s.t += dt;
+  if (s.phase === "charge" && s.t >= STRIKE.charge) { s.phase = "active"; s.t = 0; return "fired"; }
+  if (s.phase === "active" && s.t >= STRIKE.active) {
+    s.phase = "cooldown"; s.t = 0; s.cd = STRIKE.cooldown; s.vuln = STRIKE.vulnerable;
+    return "whiffed";
+  }
+  if (s.phase === "cooldown" && s.cd <= 0) { s.phase = "ready"; s.t = 0; }
+  return null;
+}
+
+/** A connected strike goes on cooldown without the vulnerability penalty. */
+export function strikeConnected(s: StrikeState) {
+  if (s.phase === "active" || s.phase === "charge") { s.phase = "cooldown"; s.t = 0; s.cd = STRIKE.cooldown; }
+}
+
+/** The strike connects when the attacker's centre reaches the defender's exposed core. */
+export function strikeHits(ax: number, ay: number, dx: number, dy: number, defenderRadius: number): boolean {
+  return Number.isFinite(defenderRadius) && defenderRadius > 0 &&
+    Math.hypot(ax - dx, ay - dy) <= defenderRadius * STRIKE.coreFrac;
+}
+
+/**
+ * Elimination payout: a fraction of the victim's mass, never 100%.
+ * Defeating a much larger opponent pays a bonus; repeat-farming the same victim pays half.
+ */
+export function eliminationReward(victimMass: number, attackerMass: number, farmed: boolean): number {
+  if (!Number.isFinite(victimMass) || victimMass <= 0) return 0;
+  const ratioBonus = Math.min(0.25, 0.125 * Math.log10(Math.max(1, victimMass / Math.max(1, attackerMass))));
+  const frac = Math.min(0.8, ARENA.eliminationGain + ratioBonus) * (farmed ? 0.5 : 1);
+  return Math.max(1, victimMass * frac);
+}
 
 /** Same exponential acceleration and bounded turning for every arena participant. */
 export function steer(o: { vx: number; vy: number }, x: number, y: number, speed: number, dt: number) {

@@ -87,7 +87,14 @@ export function skinOwned(save: Pick<SaveData, "achievements">, id: string) {
   return !!sk && (sk.achievement === null || save.achievements.includes(sk.achievement));
 }
 
-export function radiusForMass(m: number) { return 4 * Math.cbrt(Math.max(1, Math.min(MAX_MASS, m))); }
+/** Visual radius cap: the largest holes span ~7% of the arena diameter, never the map. */
+export const MAX_RADIUS = 230;
+export function radiusForMass(m: number) {
+  const raw = 4 * Math.cbrt(Math.max(1, Math.min(MAX_MASS, m)));
+  if (raw <= MAX_RADIUS) return raw;
+  // Mass keeps growing forever, but radius creeps toward 1.08× the cap (diminishing returns).
+  return MAX_RADIUS * (1.08 - 0.08 * Math.exp(-Math.log10(raw / MAX_RADIUS)));
+}
 export function canAbsorb(playerMass: number, kind: Kind | number) {
   const k = typeof kind === "number" ? kindAt(kind) : kind;
   return playerMass >= k.minMass;
