@@ -4,7 +4,7 @@ import { addMass, canAbsorb, formatMass, radiusForMass, type Settings } from "./
 import { getSprite, rng, VARIANTS, type Sprite } from "./sprites";
 import { drawBlackHole } from "./blackhole";
 import { sfx } from "./audio";
-import { paceFactor, BOOST, steer,
+import { MAX_SPEED, BOOST, steer,
   ARENA, PERSONALITIES, SpatialGrid, botStartMass, canEat, computeLeaderboard, decide,
   makeBotName, pickPersonality, randomSkin, spawnPosAwayFrom, type Bot, type LeaderEntry,
 } from "./arena";
@@ -148,7 +148,7 @@ export class Engine {
   startArena(count = this.cfg.settings.botCount) {
     this.startRun(PLAYER.startMass);
     this.arena = true; this.playerDieT = 0; this.playerKiller = null;
-    this.worldR = Math.max(1800, this.viewRadius() * 4);
+    this.worldR = ARENA.worldRadius;
     const used = new Set<string>();
     this.bots = Array.from({ length: Math.max(10, Math.min(150, Math.round(count))) }, (_, id) => {
       const mass = botStartMass(Math.random, PLAYER.startMass);
@@ -334,7 +334,7 @@ export class Engine {
       }
       const dx = bot.tx - bot.x, dy = bot.ty - bot.y, d = Math.hypot(dx, dy) || 1;
       const a = Math.atan2(dy, dx) + Math.sin(this.time * 1.4 + bot.wob) * 0.12;
-      const speed = PLAYER.speedPerRadius * r * paceFactor(bot.disp) * Math.min(0.95, bot.speed);
+      const speed = MAX_SPEED * Math.min(0.95, bot.speed);
       const inp = Math.min(1, d / (r * 3));
       steer(bot, Math.cos(a) * inp, Math.sin(a) * inp, speed, dt);
       bot.x += bot.vx * dt; bot.y += bot.vy * dt; this.clampToArena(bot);
@@ -418,7 +418,7 @@ export class Engine {
     const pr = radiusForMass(P.disp);
     const wantBoost = playing && this.playerAlive && (this.keys.has("space") || this.mouse.down || this.boostBtn) && Math.hypot(ix, iy) > 0.05;
     this.boosting = wantBoost && P.mass > BOOST.minMass;
-    const maxSpeed = PLAYER.speedPerRadius * pr * paceFactor(P.disp) * (this.boosting ? BOOST.mult : 1);
+    const maxSpeed = (this.arena ? MAX_SPEED : PLAYER.speedPerRadius * pr) * (this.boosting ? BOOST.mult : 1);
     if (this.boosting) {
       // boosting burns mass, shed as a glowing trail (slither.io)
       P.mass = Math.max(BOOST.minMass, P.mass * (1 - BOOST.costPerSec * dt));
@@ -511,10 +511,11 @@ export class Engine {
     }
     if (this.bodies.some((b) => b.dead)) this.bodies = this.bodies.filter((b) => !b.dead);
     let n = 0;
+    let localFood = -1;
     while (this.bodies.length < (this.arena ? ARENA.density : PLAYER.density) && n++ < 5) {
       if (this.arena) {
-        const localFood = this.bodies.filter((b) => !b.absorbing && canAbsorb(P.mass, b.kind) && Math.hypot(b.x - P.x, b.y - P.y) < vr).length;
-        this.spawnArenaFood(localFood < 25);
+        if (localFood < 0) { localFood = 0; for (const b of this.bodies) if (!b.absorbing && canAbsorb(P.mass, b.kind) && Math.abs(b.x - P.x) < vr && Math.abs(b.y - P.y) < vr) localFood++; }
+        this.spawnArenaFood(localFood++ < 25);
       } else this.spawn(false, eligibleCount < PLAYER.density * 0.45);
     }
 

@@ -32,9 +32,9 @@ export interface Bot {
 }
 
 export const ARENA = {
-  worldRadius: 2400,
+  worldRadius: 3600,
   /** Cosmic bodies kept alive across the whole arena. */
-  density: 1000,
+  density: 1400,
   respawnMin: 3,
   respawnMax: 6,
   /** A hole must be this much more massive to eat another hole. */
@@ -60,6 +60,9 @@ export function movementSpeed(mass: number) {
 export function paceFactor(mass: number) {
   return 0.55 / (1 + Math.log10(Math.max(1, mass / 10)) * 0.2);
 }
+
+/** Identical maximum world speed for every participant at every mass. */
+export const MAX_SPEED = 95;
 
 export const BOOST = { mult: 1.65, costPerSec: 0.025, minMass: 25 } as const;
 
