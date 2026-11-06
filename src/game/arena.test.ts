@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  ARENA, PERSONALITY_LIST, botStartMass, canEat, computeLeaderboard, decide, makeBotName,
-  pickPersonality, spawnPosAwayFrom, SpatialGrid, type Bot,
+  ARENA, PERSONALITY_LIST, STRIKE, botStartMass, canEat, computeLeaderboard, decide, eliminationReward,
+  makeBotName, newStrike, pickPersonality, spawnPosAwayFrom, strikeConnected, strikeHits, tickStrike,
+  tryStrike, SpatialGrid, type Bot,
 } from "./arena";
 import { SKINS } from "./data";
 
@@ -13,7 +14,8 @@ const seeded = (seed: number) => {
 const testBot = (over: Partial<Bot> = {}): Bot => ({
   id: 0, name: "TestBot", skin: SKINS[0], x: 0, y: 0, vx: 0, vy: 0, mass: 100, disp: 100,
   personality: "balanced", speed: 1, thinkT: 0, mode: "wander", tx: 0, ty: 0, foodRef: null,
-  alive: true, respawnT: 0, dying: false, dieT: 0, dieDur: 0.6, eater: null, wob: 0, ...over,
+  alive: true, respawnT: 0, dying: false, dieT: 0, dieDur: 0.6, eater: null, wob: 0,
+  strike: newStrike(), ...over,
 });
 
 describe("arena rules", () => {

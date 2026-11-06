@@ -4,9 +4,11 @@ import { addMass, canAbsorb, formatMass, radiusForMass, type Settings } from "./
 import { getSprite, rng, VARIANTS, type Sprite } from "./sprites";
 import { drawBlackHole } from "./blackhole";
 import { sfx } from "./audio";
-import { MAX_SPEED, BOOST, steer,
+import { MAX_SPEED, BOOST, STRIKE, steer,
   ARENA, PERSONALITIES, SpatialGrid, botStartMass, canEat, computeLeaderboard, decide,
-  makeBotName, pickPersonality, randomSkin, spawnPosAwayFrom, type Bot, type LeaderEntry,
+  eliminationReward, makeBotName, newStrike, pickPersonality, randomSkin, spawnPosAwayFrom,
+  strikeConnected, strikeHits, tickStrike, tryStrike,
+  type Bot, type LeaderEntry, type StrikeState,
 } from "./arena";
 
 interface Body {
@@ -157,7 +159,7 @@ export class Engine {
         vx: 0, vy: 0, mass, disp: mass, personality: pickPersonality(Math.random),
         speed: 0.8 + Math.random() * 0.35, thinkT: Math.random() * 0.4, mode: "wander" as const,
         tx: pos.x, ty: pos.y, foodRef: null, alive: true, respawnT: 0,
-        dying: false, dieT: 0, dieDur: 0.6, eater: null, wob: Math.random() * TAU };
+        dying: false, dieT: 0, dieDur: 0.6, eater: null, wob: Math.random() * TAU, strike: newStrike() };
     });
     this.bodies = [];
     for (let i = 0; i < ARENA.density; i++) this.spawnArenaFood(i < 70);
