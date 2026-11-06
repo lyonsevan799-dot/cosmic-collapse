@@ -134,3 +134,11 @@ describe("arena simulation", () => {
     expect(onArena.mock.lastCall?.[0].rank).toBe(1);
   });
 });
+describe("constant speed", () => {
+  it.each([10, 1e3, 1e6, 1e9])("player top speed is identical at %s mass", (mass) => {
+    engine.startArena(10); engine.player.mass = engine.player.disp = mass;
+    (engine as unknown as { keys: Set<string> }).keys.add("right");
+    tick(engine, 4);
+    expect(Math.hypot(engine.player.vx, engine.player.vy)).toBeCloseTo(95, 0);
+  });
+});
