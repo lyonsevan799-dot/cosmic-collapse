@@ -52,6 +52,7 @@ export class Engine {
   time = 0; runTime = 0; shake = 0; flash = 0; flashColor = "#fff"; pulse = 0;
   keys = new Set<string>(); joy = { x: 0, y: 0 };
   mouse = { x: 0, y: 0, active: false, down: false }; boostBtn = false; boosting = false; private shedT = 0;
+  pStrike: StrikeState = newStrike(); private farm = new Map<string, number>();
   cfg: EngineConfig = { skin: "horizon", settings: { audio: true, sfx: 0.7, music: 0.4, shake: true, reduced: false, botCount: 100 } };
   skin: Skin = SKINS[0];
   topIdx = 0; hudT = 0; movedDist = 0; movedSent = false; pulledSent = false;
@@ -107,6 +108,7 @@ export class Engine {
       if (tgt && ["INPUT", "SELECT", "BUTTON"].includes(tgt.tagName)) return;
       if (this.mode === "play") { e.preventDefault(); this.keys.add("space"); } return;
     }
+    if ((k === "e" || k === "shift") && !e.repeat) { if (this.mode === "play" && !this.paused) this.strike(); return; }
     if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) {
       const tgt = e.target as HTMLElement | null;
       if (tgt && (tgt.tagName === "INPUT" || tgt.tagName === "SELECT")) return;
@@ -119,9 +121,18 @@ export class Engine {
   onPDown = (e: PointerEvent) => { if (e.pointerType !== "mouse") return; this.onPMove(e); this.mouse.down = true; };
   onPUp = () => { this.mouse.down = false; };
   setBoost(on: boolean) { this.boostBtn = on; }
+  /** Core strike: charge, then lunge; reaching a rival's core defeats it whatever its size. */
+  strike() {
+    if (!this.arena || !this.playerAlive) return;
+    const P = this.player, sp = Math.hypot(P.vx, P.vy);
+    if (tryStrike(this.pStrike, sp > 1 ? P.vx : 1, sp > 1 ? P.vy : 0)) sfx.strikeCharge();
+  }
   onBlurEv = () => { this.resetInput(); if (this.mode === "play" && !this.paused) this.cb.onBlur?.(); };
   onVis = () => { if (document.hidden) this.onBlurEv(); };
   resetInput() { this.keys.clear(); this.joy.x = 0; this.joy.y = 0; this.mouse.down = false; this.mouse.active = false; this.boostBtn = false; this.boosting = false; }
+  private vulnerable(victim: Bot | "player") { return (victim === "player" ? this.pStrike : victim.strike).vuln > 0; }
+  /** Normal size rule, or anyone at 60% of the mass can eat a hole recovering from a missed strike. */
+  private canTake(aMass: number, vMass: number, vuln: boolean) { return canEat(aMass, vMass) || (vuln && aMass >= vMass * 0.6); }
   setJoystick(x: number, y: number) { this.joy.x = x; this.joy.y = y; }
 
   resize = () => {
@@ -264,6 +275,16 @@ export class Engine {
     this.cb.onArena?.({ ...lb, alive: this.bots.filter((b) => b.alive).length + (this.playerAlive ? 1 : 0) });
   }
 
+  /** Telegraph: pulsing ring while charging, bright ring while lunging, faint arc while vulnerable. */
+  private strikeRing(x: number, y: number, r: number, s: StrikeState, color: string) {
+    if (!Number.isFinite(x + y + r) || r <= 0) return;
+    const ctx = this.ctx; ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = Math.max(2, r * 0.08);
+    if (s.phase === "charge") { ctx.globalAlpha = 0.5 + 0.4 * Math.sin(this.time * 30); ctx.beginPath(); ctx.arc(x, y, r * (2.2 - s.t / STRIKE.charge), 0, TAU); ctx.stroke(); }
+    else if (s.phase === "active") { ctx.globalAlpha = 0.9; ctx.beginPath(); ctx.arc(x, y, r * 1.3, 0, TAU); ctx.stroke(); }
+    else if (s.vuln > 0) { ctx.globalAlpha = 0.35; ctx.setLineDash([6, 6]); ctx.beginPath(); ctx.arc(x, y, r * 1.5, 0, TAU); ctx.stroke(); }
+    ctx.restore();
+  }
+
   private eatBot(victim: Bot, eater: Bot | "player") {
     if (!victim.alive || victim.dying) return;
     victim.alive = false; victim.dying = true; victim.dieT = 0; victim.eater = eater;
@@ -289,10 +310,13 @@ export class Engine {
         if (target) { bot.x += (target.x - bot.x) * Math.min(1, dt * 9); bot.y += (target.y - bot.y) * Math.min(1, dt * 9); }
         if (bot.dieT >= bot.dieDur) {
           if (bot.eater === "player" && this.playerAlive) {
-            P.mass = addMass(P.mass, bot.mass); this.topIdx = topEligibleIndex(P.mass);
-            this.texts.push({ text: `+${formatMass(bot.mass)} MASS`, life: 0, color: this.skin.mid, big: true });
+            const last = this.farm.get(bot.name), farmed = last !== undefined && this.time - last < STRIKE.farmWindow;
+            this.farm.set(bot.name, this.time);
+            const gain = eliminationReward(bot.mass, P.mass, farmed);
+            P.mass = addMass(P.mass, gain); this.topIdx = topEligibleIndex(P.mass);
+            this.texts.push({ text: `+${formatMass(gain)} MASS`, life: 0, color: this.skin.mid, big: true });
             sfx.absorbPlanet();
-          } else if (bot.eater && bot.eater !== "player" && bot.eater.alive) bot.eater.mass = addMass(bot.eater.mass, bot.mass);
+          } else if (bot.eater && bot.eater !== "player" && bot.eater.alive) bot.eater.mass = addMass(bot.eater.mass, eliminationReward(bot.mass, bot.eater.mass, false));
           bot.dying = false; bot.eater = null;
           bot.respawnT = ARENA.respawnMin + Math.random() * (ARENA.respawnMax - ARENA.respawnMin);
         }
@@ -307,7 +331,7 @@ export class Engine {
             Math.max(this.viewRadius() * 0.7, radiusForMass(P.mass) + radius + 24), this.worldR, radius, 24);
           Object.assign(bot, pos);
           bot.vx = bot.vy = 0; bot.alive = true; bot.thinkT = 0; bot.mode = "wander";
-          bot.tx = pos.x; bot.ty = pos.y; bot.foodRef = null;
+          bot.tx = pos.x; bot.ty = pos.y; bot.foodRef = null; bot.strike = newStrike();
         }
         continue;
       }
@@ -333,21 +357,36 @@ export class Engine {
           if (d < fd) { food = b; fd = d; }
         }
         decide(bot, { threat, prey, food }, Math.random, this.worldR);
+        // Bold rivals sometimes gamble on a core strike against a nearby bigger hole.
+        if (threat && td < radiusForMass(threat.mass) * 2.5 && (bot.personality === "aggressive" || bot.personality === "competitive")
+          && Math.random() < 0.2) tryStrike(bot.strike, threat.x - bot.x, threat.y - bot.y);
       }
       const dx = bot.tx - bot.x, dy = bot.ty - bot.y, d = Math.hypot(dx, dy) || 1;
       const a = Math.atan2(dy, dx) + Math.sin(this.time * 1.4 + bot.wob) * 0.12;
-      const speed = MAX_SPEED * Math.min(0.95, bot.speed);
-      const inp = Math.min(1, d / (r * 3));
-      steer(bot, Math.cos(a) * inp, Math.sin(a) * inp, speed, dt);
+      const st = bot.strike; tickStrike(st, dt);
+      if (st.phase === "active") { bot.vx = st.dirX * MAX_SPEED * STRIKE.lungeMult; bot.vy = st.dirY * MAX_SPEED * STRIKE.lungeMult; }
+      else {
+        const speed = MAX_SPEED * Math.min(0.95, bot.speed) * (st.phase === "charge" ? 0.5 : 1);
+        const inp = Math.min(1, d / (r * 3));
+        steer(bot, Math.cos(a) * inp, Math.sin(a) * inp, speed, dt);
+      }
       bot.x += bot.vx * dt; bot.y += bot.vy * dt; this.clampToArena(bot);
       bot.disp = Math.exp(Math.log(bot.disp) + (Math.log(bot.mass) - Math.log(bot.disp)) * (1 - Math.exp(-dt * 4)));
       const nearby: Bot[] = []; this.botGrid.query(bot.x, bot.y, r * 3, nearby);
-      for (const other of nearby) if (other !== bot && other.alive && canEat(bot.mass, other.mass)
-        && Math.hypot(bot.x - other.x, bot.y - other.y) < r * 0.95 + radiusForMass(other.mass) * 0.35) this.eatBot(other, bot);
-      if (this.playerAlive) {
-        const distance = Math.hypot(bot.x - P.x, bot.y - P.y);
-        if (canEat(P.mass, bot.mass) && distance < radiusForMass(P.mass) * 0.95 + r * 0.35) this.eatBot(bot, "player");
-        else if (canEat(bot.mass, P.mass) && distance < r * 0.95 + radiusForMass(P.mass) * 0.35) {
+      for (const other of nearby) {
+        if (other === bot || !other.alive || !bot.alive) continue;
+        const od = Math.hypot(bot.x - other.x, bot.y - other.y), orad = radiusForMass(other.mass);
+        if (st.phase === "active" && strikeHits(bot.x, bot.y, other.x, other.y, orad)) { strikeConnected(st); this.eatBot(other, bot); }
+        else if (this.canTake(bot.mass, other.mass, other.strike.vuln > 0) && od < r * 0.95 + orad * 0.35) this.eatBot(other, bot);
+      }
+      if (this.playerAlive && bot.alive) {
+        const distance = Math.hypot(bot.x - P.x, bot.y - P.y), prad = radiusForMass(P.mass);
+        const botHits = st.phase === "active" && strikeHits(bot.x, bot.y, P.x, P.y, prad);
+        const playerHits = this.pStrike.phase === "active" && strikeHits(P.x, P.y, bot.x, bot.y, r);
+        if (playerHits) { strikeConnected(this.pStrike); this.eatBot(bot, "player"); sfx.strikeHit(); this.shake = Math.max(this.shake, 0.6); }
+        else if (this.canTake(P.mass, bot.mass, st.vuln > 0) && distance < prad * 0.95 + r * 0.35) this.eatBot(bot, "player");
+        else if (botHits || (this.canTake(bot.mass, P.mass, this.pStrike.vuln > 0) && distance < r * 0.95 + prad * 0.35)) {
+          if (botHits) strikeConnected(st);
           this.playerAlive = false; this.playerKiller = bot; this.playerDieT = 0; this.resetInput();
           this.cb.onKill?.(`${bot.name} absorbed You`);
         }
@@ -357,7 +396,7 @@ export class Engine {
       this.playerDieT += dt;
       P.x += (this.playerKiller.x - P.x) * Math.min(1, dt * 9); P.y += (this.playerKiller.y - P.y) * Math.min(1, dt * 9);
       if (this.playerDieT >= 0.65) {
-        if (this.playerKiller.alive) this.playerKiller.mass = addMass(this.playerKiller.mass, P.mass);
+        if (this.playerKiller.alive) this.playerKiller.mass = addMass(this.playerKiller.mass, eliminationReward(P.mass, this.playerKiller.mass, false));
         this.pause(); this.emitHud(); this.emitArena(); this.cb.onEliminated?.(this.playerKiller.name);
       }
     }
@@ -420,14 +459,18 @@ export class Engine {
     const pr = radiusForMass(P.disp);
     const wantBoost = playing && this.playerAlive && (this.keys.has("space") || this.mouse.down || this.boostBtn) && Math.hypot(ix, iy) > 0.05;
     this.boosting = wantBoost && P.mass > BOOST.minMass;
-    const maxSpeed = (this.arena ? MAX_SPEED : PLAYER.speedPerRadius * pr) * (this.boosting ? BOOST.mult : 1);
+    const ps = this.pStrike;
+    if (this.arena && tickStrike(ps, dt) === "whiffed") sfx.strikeMiss();
+    if (ps.phase === "charge") this.boosting = false;
+    const maxSpeed = (this.arena ? MAX_SPEED : PLAYER.speedPerRadius * pr) * (this.boosting ? BOOST.mult : 1) * (this.arena && ps.phase === "charge" ? 0.5 : 1);
     if (this.boosting) {
       // boosting burns mass, shed as a glowing trail (slither.io)
       P.mass = Math.max(BOOST.minMass, P.mass * (1 - BOOST.costPerSec * dt));
       this.shedT -= dt;
       if (this.shedT <= 0) { this.shedT = 0.05; this.emit(P.x - P.vx * 0.05, P.y - P.vy * 0.05, 2, this.skin.glow, pr * this.cam.zoom * 0.18, 30); }
     }
-    if (this.arena) steer(P, ix, iy, maxSpeed, dt);
+    if (this.arena && ps.phase === "active") { P.vx = ps.dirX * MAX_SPEED * STRIKE.lungeMult; P.vy = ps.dirY * MAX_SPEED * STRIKE.lungeMult; }
+    else if (this.arena) steer(P, ix, iy, maxSpeed, dt);
     else {
       const rate = il > 0.05 ? PLAYER.accel : PLAYER.decel;
       const f = 1 - Math.exp(-dt * rate);
@@ -772,6 +815,7 @@ export class Engine {
         const r = radiusForMass(bot.disp) * z * (bot.dying ? Math.max(0.06, 1 - bot.dieT / bot.dieDur) : 1);
         if (bx < -r * 4 || bx > w + r * 4 || by < -r * 4 || by > h + r * 4) continue;
         drawBlackHole(ctx, bx, by, r, t + bot.wob, bot.skin, red);
+        if (bot.alive && r > 2 && bot.strike.phase !== "ready" && bot.strike.phase !== "cooldown") this.strikeRing(bx, by, r, bot.strike, "#ff5a5a");
         if (bot.alive && r > 3) {
           ctx.textAlign = "center"; ctx.font = "600 11px Sora, system-ui, sans-serif";
           ctx.fillStyle = bot.skin.mid; ctx.fillText(bot.name, bx, by - r * 2 - 6);
@@ -780,6 +824,7 @@ export class Engine {
     }
     const playerScale = this.arena && !this.playerAlive ? Math.max(0.02, 1 - this.playerDieT / 0.65) : 1;
     drawBlackHole(ctx, px, py, prS * playerScale * (1 + this.pulse * 0.06), t, this.skin, red, this.pulse * 0.6 + grand * 0.8);
+    if (this.arena && this.playerAlive) this.strikeRing(px, py, prS, this.pStrike, this.skin.hot);
     if (this.arena && this.playerAlive) { ctx.textAlign = "center"; ctx.font = "700 12px Sora, system-ui, sans-serif"; ctx.fillStyle = this.skin.hot; ctx.fillText("You", px, py - prS * 2 - 8); }
 
     ctx.textAlign = "center";
