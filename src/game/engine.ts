@@ -160,7 +160,7 @@ export class Engine {
   startRun(mass: number) { this.arena = false; this.bots = []; this.playerAlive = true; this.mode = "play"; this.paused = false; this.reset(Math.max(PLAYER.startMass, mass)); this.emitHud(); }
   startArena(count = this.cfg.settings.botCount) {
     this.startRun(PLAYER.startMass);
-    this.arena = true; this.playerDieT = 0; this.playerKiller = null;
+    this.arena = true; this.playerDieT = 0; this.playerKiller = null; this.pStrike = newStrike(); this.farm.clear();
     this.worldR = ARENA.worldRadius;
     const used = new Set<string>();
     this.bots = Array.from({ length: Math.max(10, Math.min(150, Math.round(count))) }, (_, id) => {

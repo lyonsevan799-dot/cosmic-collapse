@@ -44,8 +44,8 @@ describe("arena simulation", () => {
     const masses = [1e4, 1e5, 1e6, 1e7, 1e8, 1e9];
     const zooms = masses.map(m => engine.zoomFor(m));
     for (let i = 1; i < masses.length; i++) {
-      expect(zooms[i]).toBeLessThan(zooms[i - 1]);
-      expect(radiusForMass(masses[i]) * zooms[i]).toBeGreaterThan(radiusForMass(masses[i - 1]) * zooms[i - 1]);
+      expect(zooms[i]).toBeGreaterThanOrEqual(Math.min(engine.w, engine.h) / (ARENA.worldRadius * 6));
+      expect(radiusForMass(masses[i]) * zooms[i]).toBeGreaterThanOrEqual(radiusForMass(masses[i - 1]) * zooms[i - 1]);
     }
     engine.startArena(10); engine.player.mass = 1e9;
     const before = engine.cam.zoom; tick(engine, 1 / 60);
@@ -96,7 +96,7 @@ describe("arena simulation", () => {
     const attacker = engine.bots[0], victim = engine.bots[1];
     attacker.mass = attacker.disp = 100; attacker.x = attacker.y = victim.x = victim.y = 0;
     tick(engine, 0.7);
-    expect(victim.alive).toBe(false); expect(attacker.mass).toBeGreaterThanOrEqual(110); expect(attacker.mass).toBeLessThan(115);
+    expect(victim.alive).toBe(false); expect(attacker.mass).toBeGreaterThanOrEqual(104.5); expect(attacker.mass).toBeLessThan(110);
     tick(engine, 6.5); expect(victim.alive).toBe(true);
   });
   it("eliminates the player, pauses, and emits the killer once", () => {
@@ -130,8 +130,28 @@ describe("arena simulation", () => {
     engine.player.mass = engine.player.disp = 100;
     const victim = engine.bots[0]; victim.x = victim.y = 0;
     tick(engine, 0.9);
-    expect(victim.alive).toBe(false); expect(engine.player.mass).toBe(110);
+    expect(victim.alive).toBe(false); expect(engine.player.mass).toBeCloseTo(104.5, 5);
     expect(onArena.mock.lastCall?.[0].rank).toBe(1);
+  });
+});
+describe("core strike", () => {
+  it("lets a small player defeat a much bigger rival by reaching its core", () => {
+    engine.startArena(10); engine.bodies = [];
+    for (const b of engine.bots) { b.x = engine.worldR * 0.8; b.y = b.id * 100; b.mass = b.disp = 10; }
+    const big = engine.bots[0]; big.mass = big.disp = 400; big.x = 3; big.y = 0; big.thinkT = 99; big.tx = 3; big.ty = 0;
+    engine.player.mass = engine.player.disp = 40;
+    engine.strike(); tick(engine, 1.4);
+    expect(big.alive).toBe(false); expect(engine.playerAlive).toBe(true);
+    expect(engine.player.mass).toBeGreaterThan(40 + 400 * 0.45);
+  });
+  it("a missed strike leaves the player vulnerable to a slightly bigger rival", () => {
+    engine.startArena(10); engine.bodies = [];
+    for (const b of engine.bots) { b.x = engine.worldR * 0.8; b.y = b.id * 100; }
+    engine.strike(); tick(engine, 0.9);
+    expect(engine.pStrike.vuln).toBeGreaterThan(0);
+    const r = engine.bots[0]; r.mass = r.disp = engine.player.mass * 1.1; r.x = engine.player.x; r.y = engine.player.y; r.thinkT = 99;
+    tick(engine, 0.8);
+    expect(engine.playerAlive).toBe(false);
   });
 });
 describe("constant speed", () => {
